@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth";
@@ -7,7 +6,7 @@ import {
   Video, Phone, MessageCircle, Users, Home, User,
   Search, Bell, Globe, Image, Send, Compass,
   Radio, ShieldCheck, Sparkles, Play, Camera, Mic,
-  Plus, LogOut, Save, Upload, ImagePlus
+  LogOut, Save, ImagePlus
 } from "lucide-react";
 import "./style.css";
 
@@ -16,6 +15,9 @@ function App() {
   const [notice, setNotice] = useState("");
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [uploading, setUploading] = useState("");
 
   const [profile, setProfile] = useState({
     display_name: "",
@@ -24,9 +26,7 @@ function App() {
     cover_url: ""
   });
 
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileSaving, setProfileSaving] = useState(false);
-  const [uploading, setUploading] = useState("");
+  const notify = (message) => setNotice(message);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -34,10 +34,11 @@ function App() {
       setChecking(false);
     });
 
-    const { data: { subscription } } =
-      supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
-      });
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
 
     return () => subscription.unsubscribe();
   }, []);
@@ -55,7 +56,7 @@ function App() {
         .maybeSingle();
 
       if (error) {
-        setNotice("Profile load error: " + error.message);
+        notify("Profile load error: " + error.message);
       } else if (data) {
         setProfile({
           display_name: data.display_name || "",
@@ -71,8 +72,6 @@ function App() {
     loadProfile();
   }, [user]);
 
-  const notify = (message) => setNotice(message);
-
   const menu = [
     ["Home", Home],
     ["Random Video", Video],
@@ -85,15 +84,20 @@ function App() {
     ["Profile", User]
   ];
 
-  const openPage = (name) => {
+  function openPage(name) {
     setPage(name);
     setNotice("");
-  };
+  }
 
   async function logout() {
     const { error } = await supabase.auth.signOut();
-    if (error) notify(error.message);
-    else setPage("Home");
+
+    if (error) {
+      notify(error.message);
+    } else {
+      setUser(null);
+      setPage("Home");
+    }
   }
 
   async function saveProfile(e) {
@@ -105,17 +109,14 @@ function App() {
 
     const { error } = await supabase
       .from("profiles")
-      .upsert(
-        {
-          id: user.id,
-          display_name: profile.display_name.trim(),
-          bio: profile.bio.trim(),
-          avatar_url: profile.avatar_url,
-          cover_url: profile.cover_url,
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: "id" }
-      );
+      .upsert({
+        id: user.id,
+        display_name: profile.display_name.trim(),
+        bio: profile.bio.trim(),
+        avatar_url: profile.avatar_url,
+        cover_url: profile.cover_url,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "id" });
 
     setProfileSaving(false);
 
@@ -166,13 +167,17 @@ function App() {
       const columnName =
         imageType === "avatar" ? "avatar_url" : "cover_url";
 
+      const updatedProfile = {
+        id: user.id,
+        display_name: profile.display_name.trim(),
+        bio: profile.bio.trim(),
+        [columnName]: imageUrl,
+        updated_at: new Date().toISOString()
+      };
+
       const { error: updateError } = await supabase
         .from("profiles")
-        .update({
-          [columnName]: imageUrl,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", user.id);
+        .upsert(updatedProfile, { onConflict: "id" });
 
       if (updateError) throw updateError;
 
@@ -224,14 +229,19 @@ function App() {
           <button className="icon-btn" onClick={() => openPage("Discover")}>
             <Search />
           </button>
+
           <button className="icon-btn" onClick={() => openPage("Notifications")}>
             <Bell />
           </button>
+
           <button className="avatar" onClick={() => openPage("Profile")}>
-            {profile.avatar_url
-              ? <img src={profile.avatar_url} alt="Profile" style={avatarStyle} />
-              : user.email?.[0]?.toUpperCase() || "G"}
+            {profile.avatar_url ? (
+              <img src={profile.avatar_url} alt="Profile" style={avatarStyle} />
+            ) : (
+              user.email?.[0]?.toUpperCase() || "G"
+            )}
           </button>
+
           <button className="icon-btn" onClick={logout} title="Logout">
             <LogOut />
           </button>
@@ -263,97 +273,107 @@ function App() {
         </aside>
 
         <main className="content">
-          {page === "Home" && <>
-            <section className="hero">
-              <div className="hero-content">
-                <span className="eyebrow">
-                  <Sparkles size={14} /> YOUR WORLD. YOUR PEOPLE.
-                </span>
-                <h1>
-                  Meet The World.<br />
-                  <span>Make New Friends.</span>
-                </h1>
-                <p>
-                  Connect with people around the globe through
-                  live video, audio and chat.
-                </p>
-                <button className="primary-btn"
+
+          {page === "Home" && (
+            <>
+              <section className="hero">
+                <div className="hero-content">
+                  <span className="eyebrow">
+                    <Sparkles size={14} /> YOUR WORLD. YOUR PEOPLE.
+                  </span>
+
+                  <h1>
+                    Meet The World.<br />
+                    <span>Make New Friends.</span>
+                  </h1>
+
+                  <p>
+                    Connect with people around the globe through
+                    live video, audio and chat.
+                  </p>
+
+                  <button
+                    className="primary-btn"
+                    onClick={() => openPage("Random Video")}
+                  >
+                    <Video size={19} /> Start Meeting <span>→</span>
+                  </button>
+                </div>
+
+                <div className="globe-art">
+                  <Globe size={145} />
+                  <div className="orbit orbit-one"></div>
+                  <div className="orbit orbit-two"></div>
+                </div>
+              </section>
+
+              <div className="section-heading">
+                <div>
+                  <h2>Start Connecting</h2>
+                  <p>Choose how you want to meet people</p>
+                </div>
+                <span className="online-tag">● WORLDWIDE</span>
+              </div>
+
+              <div className="feature-grid">
+                <button className="feature-card video-card"
                   onClick={() => openPage("Random Video")}>
-                  <Video size={19} /> Start Meeting <span>→</span>
+                  <div className="feature-icon"><Video /></div>
+                  <h3>Random Video</h3>
+                  <p>Meet strangers face to face</p>
+                  <span className="feature-arrow">→</span>
+                </button>
+
+                <button className="feature-card audio-card"
+                  onClick={() => openPage("Random Audio")}>
+                  <div className="feature-icon"><Phone /></div>
+                  <h3>Random Audio</h3>
+                  <p>Talk to someone new</p>
+                  <span className="feature-arrow">→</span>
+                </button>
+
+                <button className="feature-card chat-card"
+                  onClick={() => openPage("Random Chat")}>
+                  <div className="feature-icon"><MessageCircle /></div>
+                  <h3>Random Chat</h3>
+                  <p>Start a conversation</p>
+                  <span className="feature-arrow">→</span>
+                </button>
+
+                <button className="feature-card friends-card"
+                  onClick={() => openPage("Discover")}>
+                  <div className="feature-icon"><Users /></div>
+                  <h3>Find Friends</h3>
+                  <p>Discover new connections</p>
+                  <span className="feature-arrow">→</span>
                 </button>
               </div>
-              <div className="globe-art">
-                <Globe size={145} />
-                <div className="orbit orbit-one"></div>
-                <div className="orbit orbit-two"></div>
+
+              <div className="section-heading">
+                <div>
+                  <h2>Explore Community</h2>
+                  <p>See what's happening around the world</p>
+                </div>
+
+                <button className="text-btn"
+                  onClick={() => openPage("Discover")}>
+                  Explore all →
+                </button>
               </div>
-            </section>
 
-            <div className="section-heading">
-              <div>
-                <h2>Start Connecting</h2>
-                <p>Choose how you want to meet people</p>
+              <div className="community-card">
+                <div className="community-icon"><Image size={27} /></div>
+                <div>
+                  <h3>Your social world starts here</h3>
+                  <p>Share photos, videos and moments with your community.</p>
+                </div>
+                <button className="outline-btn"
+                  onClick={() => openPage("Profile")}>
+                  Create Profile
+                </button>
               </div>
-              <span className="online-tag">● WORLDWIDE</span>
-            </div>
-
-            <div className="feature-grid">
-              <button className="feature-card video-card"
-                onClick={() => openPage("Random Video")}>
-                <div className="feature-icon"><Video /></div>
-                <h3>Random Video</h3>
-                <p>Meet strangers face to face</p>
-                <span className="feature-arrow">→</span>
-              </button>
-
-              <button className="feature-card audio-card"
-                onClick={() => openPage("Random Audio")}>
-                <div className="feature-icon"><Phone /></div>
-                <h3>Random Audio</h3>
-                <p>Talk to someone new</p>
-                <span className="feature-arrow">→</span>
-              </button>
-
-              <button className="feature-card chat-card"
-                onClick={() => openPage("Random Chat")}>
-                <div className="feature-icon"><MessageCircle /></div>
-                <h3>Random Chat</h3>
-                <p>Start a conversation</p>
-                <span className="feature-arrow">→</span>
-              </button>
-
-              <button className="feature-card friends-card"
-                onClick={() => openPage("Discover")}>
-                <div className="feature-icon"><Users /></div>
-                <h3>Find Friends</h3>
-                <p>Discover new connections</p>
-                <span className="feature-arrow">→</span>
-              </button>
-            </div>
-
-            <div className="section-heading">
-              <div>
-                <h2>Explore Community</h2>
-                <p>See what's happening around the world</p>
-              </div>
-              <button className="text-btn"
-                onClick={() => openPage("Discover")}>
-                Explore all →
-              </button>
-            </div>
-
-            <div className="community-card">
-              <div className="community-icon"><Image size={27} /></div>
-              <div>
-                <h3>Your social world starts here</h3>
-                <p>Share photos, videos and moments with your community.</p>
-              </div>
-              <button className="outline-btn"
-                onClick={() => openPage("Profile")}>
-                Create Profile
-              </button>
-            </div>
-          </>}
+            </>
+          )}
 
           {page === "Random Video" && (
             <section className="work-panel">
@@ -362,21 +382,25 @@ function App() {
               </span>
               <h1>Random <span>Video Chat</span></h1>
               <p>Meet new people from different countries.</p>
+
               <div className="call-preview">
                 <Video size={52} />
                 <h3>Ready to meet someone new?</h3>
                 <p>Your video connection will appear here.</p>
               </div>
+
               <div className="control-row">
                 <button className="primary-btn"
                   onClick={() => notify("Video calling requires the live calling server. It will be connected in the next development stage.")}>
                   <Video /> Start Video
                 </button>
+
                 <button className="outline-btn"
                   onClick={() => notify("Camera and microphone controls will be available when calling is connected.")}>
                   <Camera /> Camera
                 </button>
               </div>
+
               <p className="safety-note">
                 <ShieldCheck size={16} /> Be respectful. You can report or block users.
               </p>
@@ -387,11 +411,13 @@ function App() {
             <section className="work-panel">
               <span className="eyebrow">GLOBAL AUDIO NETWORK</span>
               <h1>Random <span>Audio Call</span></h1>
+
               <div className="call-preview">
                 <Mic size={52} />
                 <h3>Discover a new voice</h3>
                 <p>Connect with people around the world.</p>
               </div>
+
               <button className="primary-btn"
                 onClick={() => notify("Live audio calling will be connected through our calling server.")}>
                 <Phone /> Start Audio Call
@@ -403,11 +429,13 @@ function App() {
             <section className="work-panel">
               <span className="eyebrow">MEET SOMEONE NEW</span>
               <h1>Random <span>Chat</span></h1>
+
               <div className="call-preview">
                 <MessageCircle size={52} />
                 <h3>Your next conversation awaits</h3>
                 <p>Chat with new people worldwide.</p>
               </div>
+
               <button className="primary-btn"
                 onClick={() => notify("Random chat matching will be connected to the messaging server.")}>
                 <MessageCircle /> Find Someone
@@ -419,6 +447,7 @@ function App() {
             <section className="work-panel">
               <h1>Your <span>Messenger</span></h1>
               <p>Your private and group conversations will appear here.</p>
+
               <div className="call-preview">
                 <Send size={45} />
                 <h3>Your inbox is ready</h3>
@@ -443,6 +472,7 @@ function App() {
                         style={coverImageStyle}
                       />
                     )}
+
                     <label style={coverUploadStyle}>
                       <input
                         type="file"
@@ -490,18 +520,8 @@ function App() {
 
                   <p>{user.email}</p>
 
-                  <form
-                    onSubmit={saveProfile}
-                    style={{
-                      width: "100%",
-                      maxWidth: "520px",
-                      margin: "20px auto",
-                      textAlign: "left"
-                    }}
-                  >
-                    <label style={{ display: "block", marginBottom: "8px" }}>
-                      Display Name
-                    </label>
+                  <form onSubmit={saveProfile} style={profileFormStyle}>
+                    <label style={formLabelStyle}>Display Name</label>
 
                     <input
                       type="text"
@@ -516,9 +536,7 @@ function App() {
                       style={profileInputStyle}
                     />
 
-                    <label style={{ display: "block", marginBottom: "8px" }}>
-                      Bio
-                    </label>
+                    <label style={formLabelStyle}>Bio</label>
 
                     <textarea
                       value={profile.bio}
@@ -594,11 +612,24 @@ function App() {
               <button onClick={() => setNotice("")}>×</button>
             </div>
           )}
+
         </main>
       </div>
     </div>
   );
 }
+
+const profileFormStyle = {
+  width: "100%",
+  maxWidth: "520px",
+  margin: "20px auto",
+  textAlign: "left"
+};
+
+const formLabelStyle = {
+  display: "block",
+  marginBottom: "8px"
+};
 
 const profileInputStyle = {
   width: "100%",
@@ -620,12 +651,4 @@ const avatarStyle = {
   borderRadius: "50%"
 };
 
-const coverStyle = {
-  width: "100%",
-  maxWidth: "650px",
-  height: "190px",
-  margin: "20px auto 0",
-  borderRadius: "15px",
-  background: "linear-gradient(120deg, #252e54, #6246a8)",
-  position: "relative",
-  overflow: "hidd
+cons
