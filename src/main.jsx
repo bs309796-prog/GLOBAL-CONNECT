@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth.jsx";
@@ -98,6 +97,16 @@ const styles = {
   personAvatar: {
     width: 50, height: 50, borderRadius: "50%",
     objectFit: "cover", background: "#475569"
+  },
+  connectionButton: {
+    padding: "9px 13px", border: "none", borderRadius: 8,
+    background: "#2563eb", color: "white", cursor: "pointer",
+    whiteSpace: "nowrap"
+  },
+  secondaryButton: {
+    padding: "9px 13px", border: "1px solid #94a3b8",
+    borderRadius: 8, background: "transparent",
+    cursor: "pointer", whiteSpace: "nowrap"
   }
 };
 
@@ -152,6 +161,12 @@ function App() {
   const [people, setPeople] = useState([]);
   const [loadingPeople, setLoadingPeople] = useState(false);
 
+  // Connect request system
+  const [connections, setConnections] = useState([]);
+  const [connectionProfiles, setConnectionProfiles] = useState({});
+  const [loadingConnections, setLoadingConnections] = useState(false);
+  const [connectionAction, setConnectionAction] = useState("");
+
   const menu = [
     ["Home", "🏠"],
     ["Social Feed", "📰"],
@@ -160,6 +175,7 @@ function App() {
     ["Random Chat", "💬"],
     ["Messenger", "✉️"],
     ["Discover", "🌍"],
+    ["Connections", "🤝"],
     ["Reels", "▶️"],
     ["Live Rooms", "🔴"],
     ["Profile", "👤"],
@@ -301,8 +317,10 @@ function App() {
     }
   }, [page, user]);
 
-  // Discover people
+  // Load Discover people
   async function loadPeople() {
+    if (!user) return;
+
     setLoadingPeople(true);
     setNotice("");
 
@@ -324,11 +342,179 @@ function App() {
     }
   }
 
+  // Load sent and received connection requests
+  async function loadConnections() {
+    if (!user) return;
+
+    setLoadingConnections(true);
+
+    try {
+      const [sentResult, receivedResult] = await Promise.all([
+        supabase
+          .from("connections")
+          .select("*")
+          .eq("sender_id", user.id),
+        supabase
+          .from("connections")
+          .select("*")
+          .eq("receiver_id", user.id)
+      ]);
+
+      if (sentResult.error) throw sentResult.error;
+      if (receivedResult.error) throw receivedResult.error;
+
+      const combined = [
+        ...(sentResult.data || []),
+        ...(receivedResult.data || [])
+      ];
+
+      const unique = Array.from(
+        new Map(combined.map(item => [item.id, item])).values()
+      );
+
+      setConnections(unique);
+
+      const otherIds = [
+        ...new Set(unique.map(item =>
+          item.sender_id === user.id ? item.receiver_id : item.sender_id
+        ).filter(Boolean))
+      ];
+
+      if (otherIds.length) {
+        const { data: profilesData, error: profilesError } = await supabase
+          .from("profiles")
+          .select("id, display_name, bio, avatar_url")
+          .in("id", otherIds);
+
+        if (profilesError) throw profilesError;
+
+        const profileMap = {};
+        (profilesData || []).forEach(item => {
+          profileMap[item.id] = item;
+        });
+        setConnectionProfiles(profileMap);
+      } else {
+        setConnectionProfiles({});
+      }
+    } catch (error) {
+      setNotice("Connections loading error: " + error.message);
+    } finally {
+      setLoadingConnections(false);
+    }
+  }
+
   useEffect(() => {
-    if (page === "Discover" && user) {
+    if (user && ["Discover", "Connections"].includes(page)) {
+      loadConnections();
+    }
+    if (user && page === "Discover") {
       loadPeople();
     }
   }, [page, user]);
+
+  function getConnectionFor(personId) {
+    const matching = connections.filter(item =>
+      (item.sender_id === user.id && item.receiver_id === personId) ||
+      (item.sender_id === personId && item.receiver_id === user.id)
+    );
+
+    const accepted = matching.find(item => item.status === "accepted");
+    if (accepted) return accepted;
+
+    const incoming = matching.find(item =>
+      item.status === "pending" && item.receiver_id === user.id
+    );
+    if (incoming) return incoming;
+
+    const outgoing = matching.find(item =>
+      item.status === "pending" && item.sender_id === user.id
+    );
+    if (outgoing) return outgoing;
+
+    return null;
+  }
+
+  async function sendConnectionRequest(person) {
+    if (!user || !person?.id || person.id === user.id) return;
+
+    const current = getConnectionFor(person.id);
+    if (current) return;
+
+    setConnectionAction(person.id);
+    setNotice("");
+
+    try {
+      const { data: existingRows, error: existingError } = await supabase
+        .from("connections")
+        .select("id, status")
+        .eq("sender_id", user.id)
+        .eq("receiver_id", person.id);
+
+      if (existingError) throw existingError;
+
+      const activeRequest = (existingRows || []).find(row =>
+        row.status === "pending" || row.status === "accepted"
+      );
+
+      if (activeRequest) {
+        await loadConnections();
+        return;
+      }
+
+      const { error } = await supabase
+        .from("connections")
+        .insert({
+          sender_id: user.id,
+          receiver_id: person.id,
+          status: "pending"
+        });
+
+      if (error) throw error;
+
+      setNotice("Connection request sent!");
+      await loadConnections();
+    } catch (error) {
+      setNotice("Request error: " + error.message);
+    } finally {
+      setConnectionAction("");
+    }
+  }
+
+  async function respondToConnection(connection, status) {
+    if (
+      !user ||
+      connection.receiver_id !== user.id ||
+      connection.status !== "pending"
+    ) {
+      setNotice("This request cannot be updated from your account.");
+      return;
+    }
+
+    setConnectionAction(connection.id);
+    setNotice("");
+
+    try {
+      const { error } = await supabase
+        .from("connections")
+        .update({ status })
+        .eq("id", connection.id)
+        .eq("receiver_id", user.id)
+        .eq("status", "pending");
+
+      if (error) throw error;
+
+      setNotice(
+        status === "accepted"
+          ? "Connection request accepted!"
+          : "Connection request rejected."
+      );
+      await loadConnections();
+    } catch (error) {
+      setNotice("Response error: " + error.message);
+    } finally {
+      setConnectionAction("");
+    }
+  }
 
   function openPage(name) {
     setPage(name);
@@ -346,6 +532,8 @@ function App() {
 
     setUser(null);
     setPage("Home");
+    setConnections([]);
+    setConnectionProfiles({});
 
     setProfile({
       display_name: "",
@@ -951,10 +1139,13 @@ function App() {
                 <h2>Community Members</h2>
                 <button
                   className="outline-btn"
-                  onClick={loadPeople}
-                  disabled={loadingPeople}
+                  onClick={() => {
+                    loadPeople();
+                    loadConnections();
+                  }}
+                  disabled={loadingPeople || loadingConnections}
                 >
-                  {loadingPeople ? "Loading..." : "↻ Refresh"}
+                  {loadingPeople || loadingConnections ? "Loading..." : "↻ Refresh"}
                 </button>
               </div>
 
@@ -968,22 +1159,179 @@ function App() {
               )}
 
               <div style={{ display: "grid", gap: 12, marginTop: 18 }}>
-                {people.map(person => (
-                  <div key={person.id} style={styles.personCard}>
-                    {person.avatar_url
-                      ? <img src={person.avatar_url} alt="" style={styles.personAvatar} />
-                      : <div style={styles.personAvatar}>👤</div>}
+                {people.map(person => {
+                  const relationship = getConnectionFor(person.id);
+                  const isAccepted = relationship?.status === "accepted";
+                  const isIncoming =
+                    relationship?.status === "pending" &&
+                    relationship.receiver_id === user.id;
+                  const isOutgoing =
+                    relationship?.status === "pending" &&
+                    relationship.sender_id === user.id;
 
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <strong>
-                        {person.display_name || "Community Member"}
-                      </strong>
-                      <p style={{ margin: "5px 0", fontSize: 13 }}>
-                        {person.bio || "New member of GLOBAL CONNECT"}
-                      </p>
+                  return (
+                    <div key={person.id} style={styles.personCard}>
+                      {person.avatar_url
+                        ? <img src={person.avatar_url} alt="" style={styles.personAvatar} />
+                        : <div style={styles.personAvatar}>👤</div>}
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <strong>
+                          {person.display_name || "Community Member"}
+                        </strong>
+                        <p style={{ margin: "5px 0", fontSize: 13 }}>
+                          {person.bio || "New member of GLOBAL CONNECT"}
+                        </p>
+                      </div>
+
+                      {isAccepted ? (
+                        <span style={{ color: "#16a34a", fontWeight: 700 }}>
+                          ✓ Connected
+                        </span>
+                      ) : isOutgoing ? (
+                        <span style={{ color: "#64748b", fontSize: 13 }}>
+                          Request Sent
+                        </span>
+                      ) : isIncoming ? (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button
+                            style={styles.connectionButton}
+                            disabled={connectionAction === relationship.id}
+                            onClick={() => respondToConnection(relationship, "accepted")}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            style={styles.secondaryButton}
+                            disabled={connectionAction === relationship.id}
+                            onClick={() => respondToConnection(relationship, "rejected")}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          style={styles.connectionButton}
+                          disabled={connectionAction === person.id}
+                          onClick={() => sendConnectionRequest(person)}
+                        >
+                          {connectionAction === person.id ? "Sending..." : "🤝 Connect"}
+                        </button>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* CONNECTIONS */}
+          {page === "Connections" && (
+            <section className="work-panel">
+              <h1>My <span>Connections</span></h1>
+              <p>Manage your connection requests and friends. 🤝</p>
+
+              <div style={{ ...styles.feedHeading, marginTop: 20 }}>
+                <h2>Incoming Requests</h2>
+                <button
+                  className="outline-btn"
+                  onClick={loadConnections}
+                  disabled={loadingConnections}
+                >
+                  {loadingConnections ? "Loading..." : "↻ Refresh"}
+                </button>
+              </div>
+
+              {loadingConnections && <p>Loading your connections...</p>}
+
+              {!loadingConnections && connections.filter(item =>
+                item.status === "pending" && item.receiver_id === user.id
+              ).length === 0 && (
+                <div className="call-preview">
+                  <h3>📭 No pending requests</h3>
+                  <p>When someone sends you a request, it will appear here.</p>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+                {connections
+                  .filter(item =>
+                    item.status === "pending" && item.receiver_id === user.id
+                  )
+                  .map(item => {
+                    const person = connectionProfiles[item.sender_id] || {};
+                    return (
+                      <div key={item.id} style={styles.personCard}>
+                        {person.avatar_url
+                          ? <img src={person.avatar_url} alt="" style={styles.personAvatar} />
+                          : <div style={styles.personAvatar}>👤</div>}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>{person.display_name || "Community Member"}</strong>
+                          <p style={{ margin: "5px 0", fontSize: 13 }}>
+                            {person.bio || "Wants to connect with you"}
+                          </p>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button
+                            style={styles.connectionButton}
+                            disabled={connectionAction === item.id}
+                            onClick={() => respondToConnection(item, "accepted")}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            style={styles.secondaryButton}
+                            disabled={connectionAction === item.id}
+                            onClick={() => respondToConnection(item, "rejected")}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+
+              <h2 style={{ marginTop: 28 }}>Connected People</h2>
+              {!loadingConnections && connections.filter(item =>
+                item.status === "accepted"
+              ).length === 0 && (
+                <div className="call-preview">
+                  <h3>🤝 No connections yet</h3>
+                  <p>Visit Discover and send a connection request to someone.</p>
+                  <button
+                    className="primary-btn"
+                    onClick={() => openPage("Discover")}
+                  >
+                    Discover People
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+                {connections
+                  .filter(item => item.status === "accepted")
+                  .map(item => {
+                    const otherId =
+                      item.sender_id === user.id ? item.receiver_id : item.sender_id;
+                    const person = connectionProfiles[otherId] || {};
+                    return (
+                      <div key={item.id} style={styles.personCard}>
+                        {person.avatar_url
+                          ? <img src={person.avatar_url} alt="" style={styles.personAvatar} />
+                          : <div style={styles.personAvatar}>👤</div>}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>{person.display_name || "Community Member"}</strong>
+                          <p style={{ margin: "5px 0", fontSize: 13 }}>
+                            {person.bio || "GLOBAL CONNECT member"}
+                          </p>
+                        </div>
+                        <span style={{ color: "#16a34a", fontWeight: 700 }}>
+                          ✓ Connected
+                        </span>
+                      </div>
+                    );
+                  })}
               </div>
             </section>
           )}
