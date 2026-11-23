@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import Auth from "./Auth";
-import { supabase } from "./supabase";
+import Auth from "./Auth.jsx";
+import { supabase } from "./supabase.js";
 import {
   Video, Phone, MessageCircle, Users, Home, User,
   Search, Bell, Globe, Image, Send, Compass,
@@ -9,6 +9,41 @@ import {
   LogOut, Save, ImagePlus
 } from "lucide-react";
 import "./style.css";
+
+// React error screen
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    console.error("GLOBAL CONNECT error:", error);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={errorScreenStyle}>
+          <h2>GLOBAL CONNECT Error</h2>
+          <p>{this.state.error.message}</p>
+          <button
+            style={errorButtonStyle}
+            onClick={() => window.location.reload()}
+          >
+            Reload Website
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 function App() {
   const [page, setPage] = useState("Home");
@@ -28,48 +63,110 @@ function App() {
 
   const notify = (message) => setNotice(message);
 
+  // Authentication and session checking
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
-      setChecking(false);
-    });
+    let mounted = true;
 
     const {
       data: { subscription }
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setChecking(false);
+      }
     });
 
-    return () => subscription.unsubscribe();
+    async function checkSession() {
+      try {
+        const timeout = new Promise((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("Connection timed out. Please reload the website."));
+          }, 12000);
+        });
+
+        const sessionRequest = supabase.auth.getSession();
+
+        const result = await Promise.race([
+          sessionRequest,
+          timeout
+        ]);
+
+        if (result.error) {
+          throw result.error;
+        }
+
+        if (mounted) {
+          setUser(result.data.session?.user ?? null);
+          setChecking(false);
+        }
+      } catch (error) {
+        console.error("Session error:", error);
+
+        if (mounted) {
+          setUser(null);
+          setChecking(false);
+          setNotice(
+            "Login connection error: " +
+            (error.message || "Please reload the website.")
+          );
+        }
+      }
+    }
+
+    checkSession();
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
+  // Load user profile
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setProfileLoading(false);
+      return;
+    }
+
+    let mounted = true;
 
     async function loadProfile() {
       setProfileLoading(true);
 
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("display_name, bio, avatar_url, cover_url")
-        .eq("id", user.id)
-        .maybeSingle();
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("display_name, bio, avatar_url, cover_url")
+          .eq("id", user.id)
+          .maybeSingle();
 
-      if (error) {
-        notify("Profile load error: " + error.message);
-      } else if (data) {
-        setProfile({
-          display_name: data.display_name || "",
-          bio: data.bio || "",
-          avatar_url: data.avatar_url || "",
-          cover_url: data.cover_url || ""
-        });
+        if (error) throw error;
+
+        if (mounted && data) {
+          setProfile({
+            display_name: data.display_name || "",
+            bio: data.bio || "",
+            avatar_url: data.avatar_url || "",
+            cover_url: data.cover_url || ""
+          });
+        }
+      } catch (error) {
+        console.error("Profile loading error:", error);
+        if (mounted) {
+          notify("Profile load error: " + error.message);
+        }
+      } finally {
+        if (mounted) {
+          setProfileLoading(false);
+        }
       }
-
-      setProfileLoading(false);
     }
 
     loadProfile();
+
+    return () => {
+      mounted = false;
+    };
   }, [user]);
 
   const menu = [
@@ -89,44 +186,62 @@ function App() {
     setNotice("");
   }
 
+  // Logout
   async function logout() {
-    const { error } = await supabase.auth.signOut();
+    try {
+      const { error } = await supabase.auth.signOut();
 
-    if (error) {
-      notify(error.message);
-    } else {
+      if (error) throw error;
+
       setUser(null);
       setPage("Home");
+      setProfile({
+        display_name: "",
+        bio: "",
+        avatar_url: "",
+        cover_url: ""
+      });
+      notify("You have logged out successfully.");
+    } catch (error) {
+      notify("Logout error: " + error.message);
     }
   }
 
+  // Save profile
   async function saveProfile(e) {
     e.preventDefault();
-    if (!user) return;
+
+    if (!user) {
+      notify("Please login first.");
+      return;
+    }
 
     setProfileSaving(true);
     setNotice("");
 
-    const { error } = await supabase
-      .from("profiles")
-      .upsert({
-        id: user.id,
-        display_name: profile.display_name.trim(),
-        bio: profile.bio.trim(),
-        avatar_url: profile.avatar_url,
-        cover_url: profile.cover_url,
-        updated_at: new Date().toISOString()
-      }, { onConflict: "id" });
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .upsert({
+          id: user.id,
+          display_name: profile.display_name.trim(),
+          bio: profile.bio.trim(),
+          avatar_url: profile.avatar_url,
+          cover_url: profile.cover_url,
+          updated_at: new Date().toISOString()
+        }, { onConflict: "id" });
 
-    setProfileSaving(false);
+      if (error) throw error;
 
-    if (error) {
-      notify("Profile save error: " + error.message);
-    } else {
       notify("Your profile has been saved successfully!");
+    } catch (error) {
+      notify("Profile save error: " + error.message);
+    } finally {
+      setProfileSaving(false);
     }
   }
 
+  // Upload profile and cover images
   async function uploadProfileImage(file, imageType) {
     if (!file || !user) return;
 
@@ -145,6 +260,7 @@ function App() {
 
     try {
       const extension = file.name.split(".").pop().toLowerCase();
+
       const filePath =
         `${user.id}/${imageType}-${Date.now()}.${extension}`;
 
@@ -192,33 +308,46 @@ function App() {
           : "Cover photo uploaded successfully!"
       );
     } catch (error) {
+      console.error("Image upload error:", error);
       notify("Image upload error: " + error.message);
     } finally {
       setUploading("");
     }
   }
 
+  // Loading screen
   if (checking) {
     return (
-      <div className="app" style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center"
-      }}>
-        Loading GLOBAL CONNECT...
+      <div className="app" style={loadingStyle}>
+        <Globe size={45} />
+        <h2>GLOBAL CONNECT</h2>
+        <p>Connecting to your account...</p>
       </div>
     );
   }
 
+  // Login and signup
   if (!user) {
-    return <Auth onLogin={setUser} />;
+    return (
+      <>
+        <Auth onLogin={setUser} />
+        {notice && (
+          <div style={floatingNoticeStyle}>
+            {notice}
+            <button onClick={() => setNotice("")}>×</button>
+          </div>
+        )}
+      </>
+    );
   }
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon"><Globe /></div>
+          <div className="brand-icon">
+            <Globe />
+          </div>
           <div>
             <h2>GLOBAL <span>CONNECT</span></h2>
             <small>MEET THE WORLD</small>
@@ -226,23 +355,44 @@ function App() {
         </div>
 
         <div className="top-actions">
-          <button className="icon-btn" onClick={() => openPage("Discover")}>
+          <button
+            className="icon-btn"
+            onClick={() => openPage("Discover")}
+            aria-label="Search"
+          >
             <Search />
           </button>
 
-          <button className="icon-btn" onClick={() => openPage("Notifications")}>
+          <button
+            className="icon-btn"
+            onClick={() => openPage("Notifications")}
+            aria-label="Notifications"
+          >
             <Bell />
           </button>
 
-          <button className="avatar" onClick={() => openPage("Profile")}>
+          <button
+            className="avatar"
+            onClick={() => openPage("Profile")}
+            aria-label="Profile"
+          >
             {profile.avatar_url ? (
-              <img src={profile.avatar_url} alt="Profile" style={avatarStyle} />
+              <img
+                src={profile.avatar_url}
+                alt="Profile"
+                style={avatarStyle}
+              />
             ) : (
               user.email?.[0]?.toUpperCase() || "G"
             )}
           </button>
 
-          <button className="icon-btn" onClick={logout} title="Logout">
+          <button
+            className="icon-btn"
+            onClick={logout}
+            title="Logout"
+            aria-label="Logout"
+          >
             <LogOut />
           </button>
         </div>
@@ -296,7 +446,9 @@ function App() {
                     className="primary-btn"
                     onClick={() => openPage("Random Video")}
                   >
-                    <Video size={19} /> Start Meeting <span>→</span>
+                    <Video size={19} />
+                    Start Meeting
+                    <span>→</span>
                   </button>
                 </div>
 
@@ -316,32 +468,40 @@ function App() {
               </div>
 
               <div className="feature-grid">
-                <button className="feature-card video-card"
-                  onClick={() => openPage("Random Video")}>
+                <button
+                  className="feature-card video-card"
+                  onClick={() => openPage("Random Video")}
+                >
                   <div className="feature-icon"><Video /></div>
                   <h3>Random Video</h3>
                   <p>Meet strangers face to face</p>
                   <span className="feature-arrow">→</span>
                 </button>
 
-                <button className="feature-card audio-card"
-                  onClick={() => openPage("Random Audio")}>
+                <button
+                  className="feature-card audio-card"
+                  onClick={() => openPage("Random Audio")}
+                >
                   <div className="feature-icon"><Phone /></div>
                   <h3>Random Audio</h3>
                   <p>Talk to someone new</p>
                   <span className="feature-arrow">→</span>
                 </button>
 
-                <button className="feature-card chat-card"
-                  onClick={() => openPage("Random Chat")}>
+                <button
+                  className="feature-card chat-card"
+                  onClick={() => openPage("Random Chat")}
+                >
                   <div className="feature-icon"><MessageCircle /></div>
                   <h3>Random Chat</h3>
                   <p>Start a conversation</p>
                   <span className="feature-arrow">→</span>
                 </button>
 
-                <button className="feature-card friends-card"
-                  onClick={() => openPage("Discover")}>
+                <button
+                  className="feature-card friends-card"
+                  onClick={() => openPage("Discover")}
+                >
                   <div className="feature-icon"><Users /></div>
                   <h3>Find Friends</h3>
                   <p>Discover new connections</p>
@@ -355,20 +515,28 @@ function App() {
                   <p>See what's happening around the world</p>
                 </div>
 
-                <button className="text-btn"
-                  onClick={() => openPage("Discover")}>
+                <button
+                  className="text-btn"
+                  onClick={() => openPage("Discover")}
+                >
                   Explore all →
                 </button>
               </div>
 
               <div className="community-card">
-                <div className="community-icon"><Image size={27} /></div>
+                <div className="community-icon">
+                  <Image size={27} />
+                </div>
                 <div>
                   <h3>Your social world starts here</h3>
-                  <p>Share photos, videos and moments with your community.</p>
+                  <p>
+                    Share photos, videos and moments with your community.
+                  </p>
                 </div>
-                <button className="outline-btn"
-                  onClick={() => openPage("Profile")}>
+                <button
+                  className="outline-btn"
+                  onClick={() => openPage("Profile")}
+                >
                   Create Profile
                 </button>
               </div>
@@ -380,6 +548,7 @@ function App() {
               <span className="eyebrow">
                 <Globe size={14} /> GLOBAL VIDEO NETWORK
               </span>
+
               <h1>Random <span>Video Chat</span></h1>
               <p>Meet new people from different countries.</p>
 
@@ -390,19 +559,28 @@ function App() {
               </div>
 
               <div className="control-row">
-                <button className="primary-btn"
-                  onClick={() => notify("Video calling requires the live calling server. It will be connected in the next development stage.")}>
+                <button
+                  className="primary-btn"
+                  onClick={() => notify(
+                    "Video calling requires the live calling server. It will be connected in the next development stage."
+                  )}
+                >
                   <Video /> Start Video
                 </button>
 
-                <button className="outline-btn"
-                  onClick={() => notify("Camera and microphone controls will be available when calling is connected.")}>
+                <button
+                  className="outline-btn"
+                  onClick={() => notify(
+                    "Camera and microphone controls will be available when calling is connected."
+                  )}
+                >
                   <Camera /> Camera
                 </button>
               </div>
 
               <p className="safety-note">
-                <ShieldCheck size={16} /> Be respectful. You can report or block users.
+                <ShieldCheck size={16} />
+                Be respectful. You can report or block users.
               </p>
             </section>
           )}
@@ -418,8 +596,12 @@ function App() {
                 <p>Connect with people around the world.</p>
               </div>
 
-              <button className="primary-btn"
-                onClick={() => notify("Live audio calling will be connected through our calling server.")}>
+              <button
+                className="primary-btn"
+                onClick={() => notify(
+                  "Live audio calling will be connected through our calling server."
+                )}
+              >
                 <Phone /> Start Audio Call
               </button>
             </section>
@@ -436,8 +618,12 @@ function App() {
                 <p>Chat with new people worldwide.</p>
               </div>
 
-              <button className="primary-btn"
-                onClick={() => notify("Random chat matching will be connected to the messaging server.")}>
+              <button
+                className="primary-btn"
+                onClick={() => notify(
+                  "Random chat matching will be connected to the messaging server."
+                )}
+              >
                 <MessageCircle /> Find Someone
               </button>
             </section>
@@ -480,12 +666,17 @@ function App() {
                         hidden
                         disabled={!!uploading}
                         onChange={(e) => {
-                          uploadProfileImage(e.target.files?.[0], "cover");
+                          uploadProfileImage(
+                            e.target.files?.[0],
+                            "cover"
+                          );
                           e.target.value = "";
                         }}
                       />
                       <ImagePlus size={17} />
-                      {uploading === "cover" ? "Uploading..." : "Change Cover Photo"}
+                      {uploading === "cover"
+                        ? "Uploading..."
+                        : "Change Cover Photo"}
                     </label>
                   </div>
 
@@ -509,146 +700,11 @@ function App() {
                         hidden
                         disabled={!!uploading}
                         onChange={(e) => {
-                          uploadProfileImage(e.target.files?.[0], "avatar");
+                          uploadProfileImage(
+                            e.target.files?.[0],
+                            "avatar"
+                          );
                           e.target.value = "";
                         }}
                       />
-                      <Camera size={16} />
-                      {uploading === "avatar" ? "Uploading..." : "Change Profile Photo"}
-                    </label>
-                  </div>
-
-                  <p>{user.email}</p>
-
-                  <form onSubmit={saveProfile} style={profileFormStyle}>
-                    <label style={formLabelStyle}>Display Name</label>
-
-                    <input
-                      type="text"
-                      value={profile.display_name}
-                      onChange={(e) => setProfile({
-                        ...profile,
-                        display_name: e.target.value
-                      })}
-                      placeholder="Enter your name"
-                      maxLength={60}
-                      required
-                      style={profileInputStyle}
-                    />
-
-                    <label style={formLabelStyle}>Bio</label>
-
-                    <textarea
-                      value={profile.bio}
-                      onChange={(e) => setProfile({
-                        ...profile,
-                        bio: e.target.value
-                      })}
-                      placeholder="Tell people something about yourself..."
-                      maxLength={300}
-                      rows={4}
-                      style={profileInputStyle}
-                    />
-
-                    <button
-                      className="primary-btn"
-                      type="submit"
-                      disabled={profileSaving || !!uploading}
-                    >
-                      <Save size={18} />
-                      {profileSaving ? "Saving..." : "Save Profile"}
-                    </button>
-                  </form>
-                </>
-              )}
-            </section>
-          )}
-
-          {page === "Discover" && (
-            <section className="work-panel">
-              <h1>Discover <span>People</span></h1>
-              <p>Find new friends from around the world.</p>
-              <div className="call-preview">
-                <Compass size={48} />
-                <h3>Explore the world</h3>
-                <p>People discovery will appear here.</p>
-              </div>
-            </section>
-          )}
-
-          {page === "Reels" && (
-            <section className="work-panel">
-              <h1>Global <span>Reels</span></h1>
-              <div className="call-preview">
-                <Play size={48} />
-                <h3>Short videos</h3>
-                <p>Discover videos from the community.</p>
-              </div>
-            </section>
-          )}
-
-          {page === "Live Rooms" && (
-            <section className="work-panel">
-              <h1>Live <span>Rooms</span></h1>
-              <div className="call-preview">
-                <Radio size={48} />
-                <h3>Join the conversation</h3>
-                <p>Live audio and video rooms will be available here.</p>
-              </div>
-            </section>
-          )}
-
-          {page === "Notifications" && (
-            <section className="work-panel">
-              <h1>Your <span>Notifications</span></h1>
-              <p>Updates and activity will appear here.</p>
-            </section>
-          )}
-
-          {notice && (
-            <div className="notice">
-              <ShieldCheck size={18} />
-              {notice}
-              <button onClick={() => setNotice("")}>×</button>
-            </div>
-          )}
-
-        </main>
-      </div>
-    </div>
-  );
-}
-
-const profileFormStyle = {
-  width: "100%",
-  maxWidth: "520px",
-  margin: "20px auto",
-  textAlign: "left"
-};
-
-const formLabelStyle = {
-  display: "block",
-  marginBottom: "8px"
-};
-
-const profileInputStyle = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "13px",
-  marginBottom: "20px",
-  borderRadius: "9px",
-  border: "1px solid #344263",
-  background: "#090d1c",
-  color: "white",
-  outline: "none",
-  font: "inherit"
-};
-
-const avatarStyle = {
-  width: "100%",
-  height: "100%",
-  objectFit: "cover",
-  borderRadius: "50%"
-};
-
-cons
+                      <Camera size={1
