@@ -417,6 +417,7 @@ function App() {
     setLoadingPeople(false);
   }
 
+  // CONNECTIONS: Uses sender_id and receiver_id from your actual table.
   async function loadConnections() {
     if (!user) return;
 
@@ -425,9 +426,7 @@ function App() {
     const { data, error } = await supabase
       .from("connections")
       .select("*")
-      .or(
-        `requester_id.eq.${user.id},receiver_id.eq.${user.id}`
-      )
+      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -437,16 +436,15 @@ function App() {
     }
 
     const rows = data || [];
-
     setConnections(rows);
 
     const ids = [
       ...new Set(
         rows
           .map((c) =>
-            c.requester_id === user.id
+            c.sender_id === user.id
               ? c.receiver_id
-              : c.requester_id
+              : c.sender_id
           )
           .filter(Boolean)
       )
@@ -458,7 +456,12 @@ function App() {
         .select("id,display_name,avatar_url,bio")
         .in("id", ids);
 
-      setConnectionProfiles(result.data || []);
+      if (result.error) {
+        showNotice("Connection profiles error: " + result.error.message);
+        setConnectionProfiles([]);
+      } else {
+        setConnectionProfiles(result.data || []);
+      }
     } else {
       setConnectionProfiles([]);
     }
@@ -469,20 +472,36 @@ function App() {
   function relationFor(personId) {
     return connections.find(
       (c) =>
-        (c.requester_id === user.id &&
+        (c.sender_id === user.id &&
           c.receiver_id === personId) ||
         (c.receiver_id === user.id &&
-          c.requester_id === personId)
+          c.sender_id === personId)
     );
   }
 
   async function sendConnectionRequest(personId) {
+    if (!user || !personId || personId === user.id) return;
+
     setConnectionAction(personId);
+
+    const existing = relationFor(personId);
+
+    if (existing?.status === "accepted") {
+      showNotice("You are already connected.");
+      setConnectionAction(null);
+      return;
+    }
+
+    if (existing?.status === "pending") {
+      showNotice("A connection request already exists.");
+      setConnectionAction(null);
+      return;
+    }
 
     const { error } = await supabase
       .from("connections")
       .insert({
-        requester_id: user.id,
+        sender_id: user.id,
         receiver_id: personId,
         status: "pending"
       });
@@ -498,6 +517,8 @@ function App() {
   }
 
   async function respondToConnection(connectionId, status) {
+    if (!["accepted", "rejected"].includes(status)) return;
+
     setConnectionAction(connectionId);
 
     const { error } = await supabase
@@ -681,9 +702,9 @@ function App() {
           connectionProfiles.find(
             (p) =>
               p.id ===
-              (c.requester_id === user?.id
+              (c.sender_id === user?.id
                 ? c.receiver_id
-                : c.requester_id)
+                : c.sender_id)
           )
         )
         .filter(Boolean),
@@ -723,7 +744,7 @@ function App() {
       relation?.status === "pending";
 
     const outgoing =
-      relation?.requester_id === user.id &&
+      relation?.sender_id === user.id &&
       relation?.status === "pending";
 
     const accepted = relation?.status === "accepted";
@@ -751,6 +772,7 @@ function App() {
         ) : incoming ? (
           <div className="gc-actions">
             <button
+              disabled={connectionAction === relation.id}
               onClick={() =>
                 respondToConnection(relation.id, "accepted")
               }
@@ -760,6 +782,7 @@ function App() {
 
             <button
               className="secondary-btn"
+              disabled={connectionAction === relation.id}
               onClick={() =>
                 respondToConnection(relation.id, "rejected")
               }
@@ -1178,9 +1201,9 @@ function App() {
                 incomingRequests.map((connection) => {
                   const person =
                     connectionProfiles.find(
-                      (p) => p.id === connection.requester_id
+                      (p) => p.id === connection.sender_id
                     ) || {
-                      id: connection.requester_id,
+                      id: connection.sender_id,
                       display_name: "Community member"
                     };
 
