@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth";
@@ -7,7 +6,7 @@ import {
   Video, Phone, MessageCircle, Users, Home, User,
   Search, Bell, Globe, Image, Send, Compass,
   Radio, ShieldCheck, Sparkles, Play, Camera, Mic,
-  Plus, LogOut
+  Plus, LogOut, Save
 } from "lucide-react";
 import "./style.css";
 
@@ -16,6 +15,13 @@ function App() {
   const [notice, setNotice] = useState("");
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
+
+  const [profile, setProfile] = useState({
+    display_name: "",
+    bio: ""
+  });
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -30,6 +36,33 @@ function App() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    async function loadProfile() {
+      setProfileLoading(true);
+
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("display_name, bio")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        setNotice("Profile load error: " + error.message);
+      } else if (data) {
+        setProfile({
+          display_name: data.display_name || "",
+          bio: data.bio || ""
+        });
+      }
+
+      setProfileLoading(false);
+    }
+
+    loadProfile();
+  }, [user]);
 
   const notify = (message) => setNotice(message);
 
@@ -54,6 +87,34 @@ function App() {
     const { error } = await supabase.auth.signOut();
     if (error) notify(error.message);
     else setPage("Home");
+  }
+
+  async function saveProfile(e) {
+    e.preventDefault();
+    if (!user) return;
+
+    setProfileSaving(true);
+    setNotice("");
+
+    const { error } = await supabase
+      .from("profiles")
+      .upsert(
+        {
+          id: user.id,
+          display_name: profile.display_name.trim(),
+          bio: profile.bio.trim(),
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: "id" }
+      );
+
+    setProfileSaving(false);
+
+    if (error) {
+      notify("Profile save error: " + error.message);
+    } else {
+      notify("Your profile has been saved successfully!");
+    }
   }
 
   if (checking) {
@@ -291,14 +352,76 @@ function App() {
           {page === "Profile" && (
             <section className="work-panel">
               <h1>Your <span>Profile</span></h1>
-              <div className="profile-placeholder"><User size={55} /></div>
-              <h2>Welcome to Global Connect</h2>
+
+              <div className="profile-placeholder">
+                <User size={55} />
+              </div>
+
               <p>{user.email}</p>
-              <p>Create your profile, upload photos and videos, and share your moments.</p>
-              <button className="primary-btn"
-                onClick={() => notify("Profile editing and photo uploads will be enabled after backend setup.")}>
-                <Plus /> Create Profile
-              </button>
+
+              {profileLoading ? (
+                <p>Loading your profile...</p>
+              ) : (
+                <form
+                  onSubmit={saveProfile}
+                  style={{
+                    width: "100%",
+                    maxWidth: "520px",
+                    margin: "20px auto",
+                    textAlign: "left"
+                  }}
+                >
+                  <label style={{ display: "block", marginBottom: "8px" }}>
+                    Display Name
+                  </label>
+
+                  <input
+                    type="text"
+                    value={profile.display_name}
+                    onChange={(e) => setProfile({
+                      ...profile,
+                      display_name: e.target.value
+                    })}
+                    placeholder="Enter your name"
+                    maxLength={60}
+                    required
+                    style={profileInputStyle}
+                  />
+
+                  <label style={{ display: "block", marginBottom: "8px" }}>
+                    Bio
+                  </label>
+
+                  <textarea
+                    value={profile.bio}
+                    onChange={(e) => setProfile({
+                      ...profile,
+                      bio: e.target.value
+                    })}
+                    placeholder="Tell people something about yourself..."
+                    maxLength={300}
+                    rows={4}
+                    style={profileInputStyle}
+                  />
+
+                  <button
+                    className="primary-btn"
+                    type="submit"
+                    disabled={profileSaving}
+                  >
+                    <Save size={18} />
+                    {profileSaving ? "Saving..." : "Save Profile"}
+                  </button>
+
+                  <p style={{
+                    fontSize: "13px",
+                    color: "#aab5cb",
+                    marginTop: "15px"
+                  }}>
+                    Profile photo and cover photo upload will be added next.
+                  </p>
+                </form>
+              )}
             </section>
           )}
 
@@ -356,5 +479,18 @@ function App() {
   );
 }
 
+const profileInputStyle = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "13px",
+  marginBottom: "20px",
+  borderRadius: "9px",
+  border: "1px solid #344263",
+  background: "#090d1c",
+  color: "white",
+  outline: "none",
+  font: "inherit"
+};
+
 createRoot(document.getElementById("root")).render(<App />);
-                  
+              
