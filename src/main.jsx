@@ -1,16 +1,33 @@
+
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth.jsx";
 import { supabase } from "./supabase.js";
 import {
-  Video, Phone, MessageCircle, Users, Home, User,
-  Search, Bell, Globe, Image, Send, Compass,
-  Radio, ShieldCheck, Sparkles, Play, Camera, Mic,
-  LogOut, Save, ImagePlus
+  Video,
+  Phone,
+  MessageCircle,
+  Users,
+  Home,
+  User,
+  Search,
+  Bell,
+  Globe,
+  Image,
+  Send,
+  Compass,
+  Radio,
+  ShieldCheck,
+  Sparkles,
+  Play,
+  Camera,
+  Mic,
+  LogOut,
+  Save,
+  ImagePlus
 } from "lucide-react";
 import "./style.css";
 
-// React error screen
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -63,7 +80,6 @@ function App() {
 
   const notify = (message) => setNotice(message);
 
-  // Authentication and session checking
   useEffect(() => {
     let mounted = true;
 
@@ -77,19 +93,23 @@ function App() {
     });
 
     async function checkSession() {
+      let timeoutId;
+
       try {
         const timeout = new Promise((_, reject) => {
-          setTimeout(() => {
-            reject(new Error("Connection timed out. Please reload the website."));
+          timeoutId = setTimeout(() => {
+            reject(
+              new Error("Connection timed out. Please reload the website.")
+            );
           }, 12000);
         });
 
-        const sessionRequest = supabase.auth.getSession();
-
         const result = await Promise.race([
-          sessionRequest,
+          supabase.auth.getSession(),
           timeout
         ]);
+
+        clearTimeout(timeoutId);
 
         if (result.error) {
           throw result.error;
@@ -100,6 +120,7 @@ function App() {
           setChecking(false);
         }
       } catch (error) {
+        if (timeoutId) clearTimeout(timeoutId);
         console.error("Session error:", error);
 
         if (mounted) {
@@ -107,7 +128,7 @@ function App() {
           setChecking(false);
           setNotice(
             "Login connection error: " +
-            (error.message || "Please reload the website.")
+              (error.message || "Please reload the website.")
           );
         }
       }
@@ -121,7 +142,6 @@ function App() {
     };
   }, []);
 
-  // Load user profile
   useEffect(() => {
     if (!user) {
       setProfileLoading(false);
@@ -186,11 +206,9 @@ function App() {
     setNotice("");
   }
 
-  // Logout
   async function logout() {
     try {
       const { error } = await supabase.auth.signOut();
-
       if (error) throw error;
 
       setUser(null);
@@ -207,9 +225,8 @@ function App() {
     }
   }
 
-  // Save profile
-  async function saveProfile(e) {
-    e.preventDefault();
+  async function saveProfile(event) {
+    event.preventDefault();
 
     if (!user) {
       notify("Please login first.");
@@ -222,14 +239,17 @@ function App() {
     try {
       const { error } = await supabase
         .from("profiles")
-        .upsert({
-          id: user.id,
-          display_name: profile.display_name.trim(),
-          bio: profile.bio.trim(),
-          avatar_url: profile.avatar_url,
-          cover_url: profile.cover_url,
-          updated_at: new Date().toISOString()
-        }, { onConflict: "id" });
+        .upsert(
+          {
+            id: user.id,
+            display_name: profile.display_name.trim(),
+            bio: profile.bio.trim(),
+            avatar_url: profile.avatar_url,
+            cover_url: profile.cover_url,
+            updated_at: new Date().toISOString()
+          },
+          { onConflict: "id" }
+        );
 
       if (error) throw error;
 
@@ -241,7 +261,6 @@ function App() {
     }
   }
 
-  // Upload profile and cover images
   async function uploadProfileImage(file, imageType) {
     if (!file || !user) return;
 
@@ -260,7 +279,6 @@ function App() {
 
     try {
       const extension = file.name.split(".").pop().toLowerCase();
-
       const filePath =
         `${user.id}/${imageType}-${Date.now()}.${extension}`;
 
@@ -279,7 +297,6 @@ function App() {
         .getPublicUrl(filePath);
 
       const imageUrl = publicData.publicUrl;
-
       const columnName =
         imageType === "avatar" ? "avatar_url" : "cover_url";
 
@@ -315,7 +332,6 @@ function App() {
     }
   }
 
-  // Loading screen
   if (checking) {
     return (
       <div className="app" style={loadingStyle}>
@@ -326,7 +342,6 @@ function App() {
     );
   }
 
-  // Login and signup
   if (!user) {
     return (
       <>
@@ -377,11 +392,7 @@ function App() {
             aria-label="Profile"
           >
             {profile.avatar_url ? (
-              <img
-                src={profile.avatar_url}
-                alt="Profile"
-                style={avatarStyle}
-              />
+              <img src={profile.avatar_url} alt="Profile" style={avatarStyle} />
             ) : (
               user.email?.[0]?.toUpperCase() || "G"
             )}
@@ -423,7 +434,6 @@ function App() {
         </aside>
 
         <main className="content">
-
           {page === "Home" && (
             <>
               <section className="hero">
@@ -438,8 +448,8 @@ function App() {
                   </h1>
 
                   <p>
-                    Connect with people around the globe through
-                    live video, audio and chat.
+                    Connect with people around the globe through live video,
+                    audio and chat.
                   </p>
 
                   <button
@@ -514,7 +524,6 @@ function App() {
                   <h2>Explore Community</h2>
                   <p>See what's happening around the world</p>
                 </div>
-
                 <button
                   className="text-btn"
                   onClick={() => openPage("Discover")}
@@ -548,7 +557,6 @@ function App() {
               <span className="eyebrow">
                 <Globe size={14} /> GLOBAL VIDEO NETWORK
               </span>
-
               <h1>Random <span>Video Chat</span></h1>
               <p>Meet new people from different countries.</p>
 
@@ -561,18 +569,21 @@ function App() {
               <div className="control-row">
                 <button
                   className="primary-btn"
-                  onClick={() => notify(
-                    "Video calling requires the live calling server. It will be connected in the next development stage."
-                  )}
+                  onClick={() =>
+                    notify(
+                      "Video calling requires the live calling server. It will be connected in the next development stage."
+                    )
+                  }
                 >
                   <Video /> Start Video
                 </button>
-
                 <button
                   className="outline-btn"
-                  onClick={() => notify(
-                    "Camera and microphone controls will be available when calling is connected."
-                  )}
+                  onClick={() =>
+                    notify(
+                      "Camera and microphone controls will be available when calling is connected."
+                    )
+                  }
                 >
                   <Camera /> Camera
                 </button>
@@ -589,18 +600,18 @@ function App() {
             <section className="work-panel">
               <span className="eyebrow">GLOBAL AUDIO NETWORK</span>
               <h1>Random <span>Audio Call</span></h1>
-
               <div className="call-preview">
                 <Mic size={52} />
                 <h3>Discover a new voice</h3>
                 <p>Connect with people around the world.</p>
               </div>
-
               <button
                 className="primary-btn"
-                onClick={() => notify(
-                  "Live audio calling will be connected through our calling server."
-                )}
+                onClick={() =>
+                  notify(
+                    "Live audio calling will be connected through our calling server."
+                  )
+                }
               >
                 <Phone /> Start Audio Call
               </button>
@@ -611,18 +622,18 @@ function App() {
             <section className="work-panel">
               <span className="eyebrow">MEET SOMEONE NEW</span>
               <h1>Random <span>Chat</span></h1>
-
               <div className="call-preview">
                 <MessageCircle size={52} />
                 <h3>Your next conversation awaits</h3>
                 <p>Chat with new people worldwide.</p>
               </div>
-
               <button
                 className="primary-btn"
-                onClick={() => notify(
-                  "Random chat matching will be connected to the messaging server."
-                )}
+                onClick={() =>
+                  notify(
+                    "Random chat matching will be connected to the messaging server."
+                  )
+                }
               >
                 <MessageCircle /> Find Someone
               </button>
@@ -633,11 +644,58 @@ function App() {
             <section className="work-panel">
               <h1>Your <span>Messenger</span></h1>
               <p>Your private and group conversations will appear here.</p>
-
               <div className="call-preview">
                 <Send size={45} />
                 <h3>Your inbox is ready</h3>
                 <p>Start making connections to begin chatting.</p>
+              </div>
+            </section>
+          )}
+
+          {page === "Discover" && (
+            <section className="work-panel">
+              <h1>Discover <span>People</span></h1>
+              <p>Find and connect with people around the world.</p>
+              <div className="call-preview">
+                <Compass size={48} />
+                <h3>Discover new connections</h3>
+                <p>People discovery will be connected in the next development stage.</p>
+              </div>
+            </section>
+          )}
+
+          {page === "Reels" && (
+            <section className="work-panel">
+              <h1>Global <span>Reels</span></h1>
+              <p>Short videos from your community will appear here.</p>
+              <div className="call-preview">
+                <Play size={48} />
+                <h3>Your video feed is coming</h3>
+                <p>Reels and video uploads will be connected in a later stage.</p>
+              </div>
+            </section>
+          )}
+
+          {page === "Live Rooms" && (
+            <section className="work-panel">
+              <h1>Live <span>Rooms</span></h1>
+              <p>Join group conversations and meet new people.</p>
+              <div className="call-preview">
+                <Radio size={48} />
+                <h3>Live rooms are coming</h3>
+                <p>Group audio and video rooms need the live calling service.</p>
+              </div>
+            </section>
+          )}
+
+          {page === "Notifications" && (
+            <section className="work-panel">
+              <h1>Your <span>Notifications</span></h1>
+              <p>Updates and activity will appear here.</p>
+              <div className="call-preview">
+                <Bell size={45} />
+                <h3>No new notifications</h3>
+                <p>You'll see updates here when people interact with you.</p>
               </div>
             </section>
           )}
@@ -653,58 +711,4 @@ function App() {
                   <div style={coverStyle}>
                     {profile.cover_url && (
                       <img
-                        src={profile.cover_url}
-                        alt="Cover"
-                        style={coverImageStyle}
-                      />
-                    )}
-
-                    <label style={coverUploadStyle}>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        hidden
-                        disabled={!!uploading}
-                        onChange={(e) => {
-                          uploadProfileImage(
-                            e.target.files?.[0],
-                            "cover"
-                          );
-                          e.target.value = "";
-                        }}
-                      />
-                      <ImagePlus size={17} />
-                      {uploading === "cover"
-                        ? "Uploading..."
-                        : "Change Cover Photo"}
-                    </label>
-                  </div>
-
-                  <div style={avatarSectionStyle}>
-                    <div style={profileAvatarStyle}>
-                      {profile.avatar_url ? (
-                        <img
-                          src={profile.avatar_url}
-                          alt="Profile"
-                          style={profileImageStyle}
-                        />
-                      ) : (
-                        <User size={55} />
-                      )}
-                    </div>
-
-                    <label style={photoUploadStyle}>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        hidden
-                        disabled={!!uploading}
-                        onChange={(e) => {
-                          uploadProfileImage(
-                            e.target.files?.[0],
-                            "avatar"
-                          );
-                          e.target.value = "";
-                        }}
-                      />
-                      <Camera size={1
+                        src={profile.cover_url
