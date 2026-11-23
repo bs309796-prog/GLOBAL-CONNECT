@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth";
@@ -6,7 +7,7 @@ import {
   Video, Phone, MessageCircle, Users, Home, User,
   Search, Bell, Globe, Image, Send, Compass,
   Radio, ShieldCheck, Sparkles, Play, Camera, Mic,
-  Plus, LogOut, Save
+  Plus, LogOut, Save, Upload, ImagePlus
 } from "lucide-react";
 import "./style.css";
 
@@ -18,10 +19,14 @@ function App() {
 
   const [profile, setProfile] = useState({
     display_name: "",
-    bio: ""
+    bio: "",
+    avatar_url: "",
+    cover_url: ""
   });
+
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [uploading, setUploading] = useState("");
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -45,7 +50,7 @@ function App() {
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("display_name, bio")
+        .select("display_name, bio, avatar_url, cover_url")
         .eq("id", user.id)
         .maybeSingle();
 
@@ -54,7 +59,9 @@ function App() {
       } else if (data) {
         setProfile({
           display_name: data.display_name || "",
-          bio: data.bio || ""
+          bio: data.bio || "",
+          avatar_url: data.avatar_url || "",
+          cover_url: data.cover_url || ""
         });
       }
 
@@ -103,6 +110,8 @@ function App() {
           id: user.id,
           display_name: profile.display_name.trim(),
           bio: profile.bio.trim(),
+          avatar_url: profile.avatar_url,
+          cover_url: profile.cover_url,
           updated_at: new Date().toISOString()
         },
         { onConflict: "id" }
@@ -114,6 +123,73 @@ function App() {
       notify("Profile save error: " + error.message);
     } else {
       notify("Your profile has been saved successfully!");
+    }
+  }
+
+  async function uploadProfileImage(file, imageType) {
+    if (!file || !user) return;
+
+    if (!file.type.startsWith("image/")) {
+      notify("Please select an image file.");
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      notify("Image size must be less than 5 MB.");
+      return;
+    }
+
+    setUploading(imageType);
+    setNotice("");
+
+    try {
+      const extension = file.name.split(".").pop().toLowerCase();
+      const filePath =
+        `${user.id}/${imageType}-${Date.now()}.${extension}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("profile-media")
+        .upload(filePath, file, {
+          cacheControl: "3600",
+          upsert: true,
+          contentType: file.type
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicData } = supabase.storage
+        .from("profile-media")
+        .getPublicUrl(filePath);
+
+      const imageUrl = publicData.publicUrl;
+
+      const columnName =
+        imageType === "avatar" ? "avatar_url" : "cover_url";
+
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({
+          [columnName]: imageUrl,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", user.id);
+
+      if (updateError) throw updateError;
+
+      setProfile((previous) => ({
+        ...previous,
+        [columnName]: imageUrl
+      }));
+
+      notify(
+        imageType === "avatar"
+          ? "Profile photo uploaded successfully!"
+          : "Cover photo uploaded successfully!"
+      );
+    } catch (error) {
+      notify("Image upload error: " + error.message);
+    } finally {
+      setUploading("");
     }
   }
 
@@ -152,7 +228,9 @@ function App() {
             <Bell />
           </button>
           <button className="avatar" onClick={() => openPage("Profile")}>
-            {user.email?.[0]?.toUpperCase() || "G"}
+            {profile.avatar_url
+              ? <img src={profile.avatar_url} alt="Profile" style={avatarStyle} />
+              : user.email?.[0]?.toUpperCase() || "G"}
           </button>
           <button className="icon-btn" onClick={logout} title="Logout">
             <LogOut />
@@ -353,74 +431,117 @@ function App() {
             <section className="work-panel">
               <h1>Your <span>Profile</span></h1>
 
-              <div className="profile-placeholder">
-                <User size={55} />
-              </div>
-
-              <p>{user.email}</p>
-
               {profileLoading ? (
                 <p>Loading your profile...</p>
               ) : (
-                <form
-                  onSubmit={saveProfile}
-                  style={{
-                    width: "100%",
-                    maxWidth: "520px",
-                    margin: "20px auto",
-                    textAlign: "left"
-                  }}
-                >
-                  <label style={{ display: "block", marginBottom: "8px" }}>
-                    Display Name
-                  </label>
+                <>
+                  <div style={coverStyle}>
+                    {profile.cover_url && (
+                      <img
+                        src={profile.cover_url}
+                        alt="Cover"
+                        style={coverImageStyle}
+                      />
+                    )}
+                    <label style={coverUploadStyle}>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        disabled={!!uploading}
+                        onChange={(e) => {
+                          uploadProfileImage(e.target.files?.[0], "cover");
+                          e.target.value = "";
+                        }}
+                      />
+                      <ImagePlus size={17} />
+                      {uploading === "cover" ? "Uploading..." : "Change Cover Photo"}
+                    </label>
+                  </div>
 
-                  <input
-                    type="text"
-                    value={profile.display_name}
-                    onChange={(e) => setProfile({
-                      ...profile,
-                      display_name: e.target.value
-                    })}
-                    placeholder="Enter your name"
-                    maxLength={60}
-                    required
-                    style={profileInputStyle}
-                  />
+                  <div style={avatarSectionStyle}>
+                    <div style={profileAvatarStyle}>
+                      {profile.avatar_url ? (
+                        <img
+                          src={profile.avatar_url}
+                          alt="Profile"
+                          style={profileImageStyle}
+                        />
+                      ) : (
+                        <User size={55} />
+                      )}
+                    </div>
 
-                  <label style={{ display: "block", marginBottom: "8px" }}>
-                    Bio
-                  </label>
+                    <label style={photoUploadStyle}>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        disabled={!!uploading}
+                        onChange={(e) => {
+                          uploadProfileImage(e.target.files?.[0], "avatar");
+                          e.target.value = "";
+                        }}
+                      />
+                      <Camera size={16} />
+                      {uploading === "avatar" ? "Uploading..." : "Change Profile Photo"}
+                    </label>
+                  </div>
 
-                  <textarea
-                    value={profile.bio}
-                    onChange={(e) => setProfile({
-                      ...profile,
-                      bio: e.target.value
-                    })}
-                    placeholder="Tell people something about yourself..."
-                    maxLength={300}
-                    rows={4}
-                    style={profileInputStyle}
-                  />
+                  <p>{user.email}</p>
 
-                  <button
-                    className="primary-btn"
-                    type="submit"
-                    disabled={profileSaving}
+                  <form
+                    onSubmit={saveProfile}
+                    style={{
+                      width: "100%",
+                      maxWidth: "520px",
+                      margin: "20px auto",
+                      textAlign: "left"
+                    }}
                   >
-                    <Save size={18} />
-                    {profileSaving ? "Saving..." : "Save Profile"}
-                  </button>
+                    <label style={{ display: "block", marginBottom: "8px" }}>
+                      Display Name
+                    </label>
 
-                  <p style={{
-                    fontSize: "13px",
-                    color: "#aab5cb",
-                    marginTop: "15px"
-                  }}>
-                    Profile photo and cover photo upload will be added next.
-                  </p>
-                </form>
+                    <input
+                      type="text"
+                      value={profile.display_name}
+                      onChange={(e) => setProfile({
+                        ...profile,
+                        display_name: e.target.value
+                      })}
+                      placeholder="Enter your name"
+                      maxLength={60}
+                      required
+                      style={profileInputStyle}
+                    />
+
+                    <label style={{ display: "block", marginBottom: "8px" }}>
+                      Bio
+                    </label>
+
+                    <textarea
+                      value={profile.bio}
+                      onChange={(e) => setProfile({
+                        ...profile,
+                        bio: e.target.value
+                      })}
+                      placeholder="Tell people something about yourself..."
+                      maxLength={300}
+                      rows={4}
+                      style={profileInputStyle}
+                    />
+
+                    <button
+                      className="primary-btn"
+                      type="submit"
+                      disabled={profileSaving || !!uploading}
+                    >
+                      <Save size={18} />
+                      {profileSaving ? "Saving..." : "Save Profile"}
+                    </button>
+                  </form>
+                </>
               )}
             </section>
           )}
@@ -492,5 +613,19 @@ const profileInputStyle = {
   font: "inherit"
 };
 
-createRoot(document.getElementById("root")).render(<App />);
-              
+const avatarStyle = {
+  width: "100%",
+  height: "100%",
+  objectFit: "cover",
+  borderRadius: "50%"
+};
+
+const coverStyle = {
+  width: "100%",
+  maxWidth: "650px",
+  height: "190px",
+  margin: "20px auto 0",
+  borderRadius: "15px",
+  background: "linear-gradient(120deg, #252e54, #6246a8)",
+  position: "relative",
+  overflow: "hidd
