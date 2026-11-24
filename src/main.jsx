@@ -1,6 +1,8 @@
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth.jsx";
+import CallSystem from "./CallSystem.jsx";
 import { supabase } from "./supabase.js";
 import "./style.css";
 import {
@@ -29,7 +31,7 @@ const TABLES = {
   rooms: "live_rooms",
   participants: "live_room_participants",
   queue: "random_chat_queue",
-  signals: "call_signals"
+  signals: "gc_call_signals"
 };
 
 const NAV = [
@@ -616,7 +618,6 @@ function App() {
     setCallPeer(person);
     setCallMode(mode);
     setCallState("starting");
-    flash("Calling setup: WebRTC signaling backend required");
   }
 
   async function logout() {
@@ -1139,15 +1140,17 @@ function App() {
       )}
 
       {callPeer && (
-        <div className="gc-modal">
-          <div className="gc-call-card">
-            <Avatar src={callPeer.avatar_url} name={callPeer.display_name} size={90}/>
-            <h2>{callPeer.display_name}</h2>
-            <p>{callMode === "video" ? "Video call" : "Audio call"} · WebRTC setup required</p>
-            <button className="gc-btn gc-btn-danger" onClick={() => { setCallPeer(null); setCallState("idle"); }}>End Call</button>
-          </div>
-        </div>
+        <CallSystem
+          supabase={supabase}
+          user={user}
+          peer={callPeer}
+          onClose={() => {
+            setCallPeer(null);
+            setCallState("idle");
+          }}
+        />
       )}
+
       {notice && <div className="gc-toast">{notice}</div>}
     </div>
   );
