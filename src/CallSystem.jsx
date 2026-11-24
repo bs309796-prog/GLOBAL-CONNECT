@@ -1,5 +1,5 @@
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 export default function CallSystem({ supabase, user, peer, onClose }) {
   const [incoming, setIncoming] = useState(null);
@@ -11,15 +11,25 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
 
   const pcRef = useRef(null);
   const localRef = useRef(null);
-  const remoteRef = useRef(null);
   const callIdRef = useRef(null);
   const remoteIdRef = useRef(null);
   const pendingIceRef = useRef([]);
+  const incomingRef = useRef(null);
+  const statusRef = useRef("idle");
+  const handlerRef = useRef(null);
+  const mountedRef = useRef(true);
 
   const peerId = peer?.id || peer?.user_id;
 
-  async function sendSignal(to, eventType, payload = {}, callId = callIdRef.current) {
-    if (!user?.id || !to || !callId) return;
+  const updateStatus = (value) => {
+    statusRef.current = value;
+    if (mountedRef.current) setStatus(value);
+  };
+
+  const sendSignal = async (to, eventType, payload = {}, callId = callIdRef.current) => {
+    if (!user?.id || !to || !callId) {
+      throw new Error("Call information missing");
+    }
 
     const { error } = await supabase.from("gc_call_signals").insert({
       call_id: callId,
@@ -30,19 +40,67 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
     });
 
     if (error) throw error;
-  }
+  };
 
-  async function getMedia(mode) {
+  const cleanup = useCallback(() => {
+    if (pcRef.current) {
+      pcRef.current.ontrack = null;
+      pcRef.current.onicecandidate = null;
+      pcRef.current.onconnectionstatechange = null;
+      pcRef.current.oniceconnectionstatechange = null;
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+
+    if (localRef.current) {
+      localRef.current.getTracks().forEach(track => track.stop());
+      localRef.current = null;
+    }
+
+    callIdRef.current = null;
+    remoteIdRef.current = null;
+    pendingIceRef.current = [];
+    incomingRef.current = null;
+
+    if (mountedRef.current) {
+      setLocalStream(null);
+      setRemoteStream(null);
+      setIncoming(null);
+      setError("");
+    }
+
+    updateStatus("idle");
+  }, []);
+
+  const getMedia = async (mode) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("इस ब्राउज़र में Audio/Video कॉल उपलब्ध नहीं है। HTTPS पर खोलें।");
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: true,
       video: mode === "video"
     });
-    localRef.current = stream;
-    setLocalStream(stream);
-    return stream;
-  }
 
-  function createConnection(remoteId, callId) {
+    localRef.current = stream;
+    if (mountedRef.current) setLocalStream(stream);
+    return stream;
+  };
+
+  const addPendingIce = async (pc) => {
+    const candidates = [...pendingIceRef.current];
+    pendingIceRef.current = [];
+
+    for (const candidate of candidates) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.warn("ICE candidate error:", e);
+      }
+    }
+  };
+
+  const createConnection = (remoteId, callId) => {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -53,46 +111,54 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
     pcRef.current = pc;
 
     pc.onicecandidate = async (event) => {
-      if (event.candidate) {
-        try {
-          await sendSignal(remoteId, "ice", event.candidate.toJSON(), callId);
-        } catch (e) {
-          setError(e.message);
-        }
+      if (!event.candidate) return;
+
+      try {
+        await sendSignal(
+          remoteId,
+          "ice",
+          event.candidate.toJSON(),
+          callId
+        );
+      } catch (e) {
+        if (mountedRef.current) setError(e.message);
       }
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams[0];
-      remoteRef.current = stream;
-      setRemoteStream(stream);
+      const stream = event.streams?.[0];
+      if (stream && mountedRef.current) {
+        setRemoteStream(stream);
+      }
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") setStatus("connected");
-      if (["failed", "disconnected"].includes(pc.connectionState)) {
-        setStatus("connection problem");
+      if (pc.connectionState === "connected") {
+        updateStatus("connected");
+      } else if (pc.connectionState === "connecting") {
+        updateStatus("connecting");
+      } else if (pc.connectionState === "failed") {
+        updateStatus("connection failed");
+        if (mountedRef.current) {
+          setError("कॉल कनेक्ट नहीं हो पाई। दूसरे नेटवर्क से कोशिश करें।");
+        }
+      } else if (pc.connectionState === "disconnected") {
+        updateStatus("disconnected");
+      } else if (pc.connectionState === "closed") {
+        updateStatus("idle");
       }
     };
 
     return pc;
-  }
+  };
 
-  async function addPendingIce(pc) {
-    for (const candidate of pendingIceRef.current) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch {}
-    }
-    pendingIceRef.current = [];
-  }
+  const startCall = async (mode) => {
+    if (!peerId || !user?.id || statusRef.current !== "idle") return;
 
-  async function startCall(mode) {
-    if (!peerId || !user?.id) return;
     try {
       setError("");
       setCallMode(mode);
-      setStatus("calling");
+      updateStatus("calling");
 
       const callId = crypto.randomUUID();
       callIdRef.current = callId;
@@ -100,27 +166,36 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
 
       const stream = await getMedia(mode);
       const pc = createConnection(peerId, callId);
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       await sendSignal(peerId, "invite", {
-        offer,
+        offer: pc.localDescription,
         mode,
-        caller_name: user.user_metadata?.display_name || "GLOBAL CONNECT User"
+        caller_name:
+          user.user_metadata?.display_name ||
+          user.user_metadata?.full_name ||
+          user.email ||
+          "GLOBAL CONNECT User"
       }, callId);
     } catch (e) {
       setError(e.message || "Call शुरू नहीं हो पाई");
       cleanup();
     }
-  }
+  };
 
-  async function acceptCall() {
-    if (!incoming) return;
+  const acceptCall = async () => {
+    const row = incomingRef.current;
+    if (!row) return;
+
     try {
       setError("");
-      const row = incoming;
+
       const callId = row.call_id;
       const remoteId = row.from_user_id;
       const mode = row.payload?.mode || "video";
@@ -128,39 +203,77 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
       callIdRef.current = callId;
       remoteIdRef.current = remoteId;
       setCallMode(mode);
+      incomingRef.current = null;
       setIncoming(null);
-      setStatus("connecting");
+      updateStatus("connecting");
 
       const stream = await getMedia(mode);
       const pc = createConnection(remoteId, callId);
 
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
 
       await pc.setRemoteDescription(
         new RTCSessionDescription(row.payload.offer)
       );
 
+      await addPendingIce(pc);
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      await sendSignal(remoteId, "answer", { answer }, callId);
-      await addPendingIce(pc);
+      await sendSignal(remoteId, "answer", {
+        answer: pc.localDescription
+      }, callId);
     } catch (e) {
       setError(e.message || "Call स्वीकार नहीं हुई");
       cleanup();
     }
-  }
+  };
 
-  async function handleSignal(row) {
+  const rejectCall = async () => {
+    const row = incomingRef.current;
+    if (row) {
+      try {
+        await sendSignal(
+          row.from_user_id,
+          "reject",
+          {},
+          row.call_id
+        );
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+
+    incomingRef.current = null;
+    setIncoming(null);
+    updateStatus("idle");
+  };
+
+  const handleSignal = async (row) => {
+    if (!row || !row.event_type) return;
+
     const payload = row.payload || {};
 
     if (row.event_type === "invite") {
-      if (status !== "idle" || incoming) {
+      if (
+        statusRef.current !== "idle" ||
+        incomingRef.current
+      ) {
         try {
-          await sendSignal(row.from_user_id, "reject", {}, row.call_id);
+          await sendSignal(
+            row.from_user_id,
+            "reject",
+            {},
+            row.call_id
+          );
         } catch {}
         return;
       }
+
+      incomingRef.current = row;
       setIncoming(row);
       return;
     }
@@ -168,31 +281,43 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
     if (row.call_id !== callIdRef.current) return;
 
     if (row.event_type === "answer" && pcRef.current) {
-      await pcRef.current.setRemoteDescription(
-        new RTCSessionDescription(payload.answer)
-      );
-      await addPendingIce(pcRef.current);
-      setStatus("connecting");
+      if (!pcRef.current.remoteDescription) {
+        await pcRef.current.setRemoteDescription(
+          new RTCSessionDescription(payload.answer)
+        );
+        await addPendingIce(pcRef.current);
+      }
+      updateStatus("connecting");
+      return;
     }
 
-    if (row.event_type === "ice" && pcRef.current) {
-      if (pcRef.current.remoteDescription) {
+    if (row.event_type === "ice") {
+      const pc = pcRef.current;
+
+      if (pc?.remoteDescription) {
         try {
-          await pcRef.current.addIceCandidate(
+          await pc.addIceCandidate(
             new RTCIceCandidate(payload)
           );
-        } catch {}
+        } catch (e) {
+          console.warn("ICE error:", e);
+        }
       } else {
         pendingIceRef.current.push(payload);
       }
+      return;
     }
 
     if (["hangup", "reject"].includes(row.event_type)) {
       cleanup();
+      return;
     }
-  }
+  };
 
   useEffect(() => {
+    mountedRef.current = true;
+    handlerRef.current = handleSignal;
+
     if (!supabase || !user?.id) return;
 
     const channel = supabase
@@ -206,64 +331,38 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
           filter: "to_user_id=eq." + user.id
         },
         ({ new: row }) => {
-          handleSignal(row).catch(e => setError(e.message));
+          handlerRef.current?.(row).catch(e => {
+            if (mountedRef.current) setError(e.message);
+          });
         }
       )
       .subscribe();
 
     return () => {
+      mountedRef.current = false;
       supabase.removeChannel(channel);
       cleanup();
     };
-  }, [supabase, user?.id]);
+  }, [supabase, user?.id, cleanup]);
 
-  async function hangup() {
+  const hangup = async () => {
     try {
       if (remoteIdRef.current && callIdRef.current) {
         await sendSignal(remoteIdRef.current, "hangup");
       }
-    } catch {}
+    } catch (e) {
+      console.warn(e);
+    }
+
     cleanup();
-  }
+  };
 
-  async function rejectCall() {
-    if (incoming) {
-      try {
-        await sendSignal(
-          incoming.from_user_id,
-          "reject",
-          {},
-          incoming.call_id
-        );
-      } catch {}
-    }
-    setIncoming(null);
-  }
+  const closePanel = async () => {
+    await hangup();
+    onClose?.();
+  };
 
-  function cleanup() {
-    if (pcRef.current) {
-      pcRef.current.ontrack = null;
-      pcRef.current.onicecandidate = null;
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-
-    if (localRef.current) {
-      localRef.current.getTracks().forEach(track => track.stop());
-      localRef.current = null;
-    }
-
-    remoteRef.current = null;
-    setLocalStream(null);
-    setRemoteStream(null);
-    setIncoming(null);
-    setStatus("idle");
-    callIdRef.current = null;
-    remoteIdRef.current = null;
-    pendingIceRef.current = [];
-  }
-
-  const panel = {
+  const panelStyle = {
     position: "fixed",
     inset: 0,
     zIndex: 99999,
@@ -274,18 +373,41 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
     alignItems: "center",
     justifyContent: "center",
     padding: 20,
-    gap: 16
+    gap: 16,
+    overflowY: "auto"
+  };
+
+  const buttonStyle = {
+    padding: "12px 22px",
+    border: 0,
+    borderRadius: 10,
+    background: "#2563eb",
+    color: "white",
+    fontWeight: 700,
+    cursor: "pointer"
   };
 
   if (!user?.id) return null;
 
   if (incoming) {
     return (
-      <div style={panel}>
+      <div style={panelStyle}>
         <h2>Incoming {incoming.payload?.mode || "video"} call</h2>
-        <p>{incoming.payload?.caller_name || "GLOBAL CONNECT User"}</p>
-        <button onClick={acceptCall}>Accept Call</button>
-        <button onClick={rejectCall}>Reject Call</button>
+        <p>
+          {incoming.payload?.caller_name || "GLOBAL CONNECT User"}
+        </p>
+
+        <button style={buttonStyle} onClick={acceptCall}>
+          Accept Call
+        </button>
+
+        <button
+          style={{ ...buttonStyle, background: "#dc2626" }}
+          onClick={rejectCall}
+        >
+          Reject Call
+        </button>
+
         {error && <p>{error}</p>}
       </div>
     );
@@ -293,25 +415,33 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
 
   if (status !== "idle") {
     return (
-      <div style={panel}>
-        <h2>{peer?.display_name || peer?.name || "GLOBAL CONNECT Call"}</h2>
-        <p>{status}</p>
+      <div style={panelStyle}>
+        <h2>
+          {peer?.display_name || peer?.name || "GLOBAL CONNECT Call"}
+        </h2>
 
-        {callMode === "video" && (
+        <p>Call status: {status}</p>
+
+        {callMode === "video" && localStream && (
           <video
             autoPlay
             playsInline
             muted
             ref={el => {
-              if (el && localStream && el.srcObject !== localStream) {
+              if (el && el.srcObject !== localStream) {
                 el.srcObject = localStream;
               }
             }}
-            style={{ width: "45%", maxWidth: 220, borderRadius: 12 }}
+            style={{
+              width: "45%",
+              maxWidth: 220,
+              borderRadius: 12,
+              background: "#000"
+            }}
           />
         )}
 
-        {remoteStream && (
+        {remoteStream && callMode === "video" && (
           <video
             autoPlay
             playsInline
@@ -320,7 +450,12 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
                 el.srcObject = remoteStream;
               }
             }}
-            style={{ width: "90%", maxWidth: 500, borderRadius: 12 }}
+            style={{
+              width: "90%",
+              maxWidth: 600,
+              borderRadius: 12,
+              background: "#000"
+            }}
           />
         )}
 
@@ -335,8 +470,14 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
           />
         )}
 
-        {error && <p>{error}</p>}
-        <button onClick={hangup}>End Call</button>
+        {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
+
+        <button
+          style={{ ...buttonStyle, background: "#dc2626" }}
+          onClick={hangup}
+        >
+          End Call
+        </button>
       </div>
     );
   }
@@ -345,9 +486,21 @@ export default function CallSystem({ supabase, user, peer, onClose }) {
 
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <button onClick={() => startCall("audio")}>Audio Call</button>
-      <button onClick={() => startCall("video")}>Video Call</button>
-      {error && <p>{error}</p>}
+      <button
+        style={buttonStyle}
+        onClick={() => startCall("audio")}
+      >
+        Audio Call
+      </button>
+
+      <button
+        style={buttonStyle}
+        onClick={() => startCall("video")}
+      >
+        Video Call
+      </button>
+
+      {error && <p style={{ color: "#fca5a5" }}>{error}</p>}
     </div>
   );
 }
