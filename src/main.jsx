@@ -1,1354 +1,1157 @@
-
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Auth from "./Auth.jsx";
 import { supabase } from "./supabase.js";
 import "./style.css";
+import {
+  Home, Compass, Users, User, MessageCircle, Bell, Video, Radio,
+  Image, Heart, MessageSquare, Send, Plus, Search, Settings, LogOut,
+  Menu, X, MoreHorizontal, Camera, Mic, Phone, PhoneCall, Smile,
+  Bookmark, Share2, Trash2, Check, CheckCheck, RefreshCw, Play,
+  Film, Headphones, Globe, UserPlus, UserCheck, ArrowLeft, Upload,
+  Edit3, Shield, Volume2, Wifi, CircleDot, Clock, Eye, ChevronDown
+} from "lucide-react";
 
+const BUCKET_POST = "post-media";
+const BUCKET_PROFILE = "profile-media";
 const MAX_POST_SIZE = 50 * 1024 * 1024;
 const MAX_PROFILE_SIZE = 5 * 1024 * 1024;
 
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null };
+const TABLES = {
+  profiles: "profiles",
+  posts: "posts",
+  connections: "connections",
+  messages: "messages",
+  likes: "post_likes",
+  comments: "post_comments",
+  stories: "stories",
+  notifications: "notifications",
+  rooms: "live_rooms",
+  participants: "live_room_participants",
+  queue: "random_chat_queue",
+  signals: "call_signals"
+};
+
+const NAV = [
+  ["Home", Home],
+  ["Social Feed", Image],
+  ["Stories", CircleDot],
+  ["Reels", Film],
+  ["Discover", Compass],
+  ["Connections", Users],
+  ["Messenger", MessageCircle],
+  ["Random Chat", Globe],
+  ["Random Video", Video],
+  ["Random Audio", Headphones],
+  ["Live Rooms", Radio],
+  ["Notifications", Bell],
+  ["Profile", User],
+  ["Settings", Settings]
+];
+
+const timeAgo = (value) => {
+  if (!value) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+};
+
+const initials = (name = "User") =>
+  name.trim().split(/\s+/).slice(0, 2).map(x => x[0]?.toUpperCase()).join("");
+
+function Avatar({ src, name, size = 42, online = false }) {
+  return (
+    <span className="gc-avatar-wrap" style={{ width: size, height: size }}>
+      {src
+        ? <img className="gc-avatar" src={src} alt={name || "Profile"} />
+        : <span className="gc-avatar gc-avatar-fallback">{initials(name)}</span>}
+      {online && <i className="gc-online-dot" />}
+    </span>
+  );
+}
+
+function ErrorBoundary({ children }) {
+  const [error, setError] = useState("");
+  if (error) {
+    return (
+      <div className="gc-error">
+        <h2>GLOBAL CONNECT</h2>
+        <p>Something went wrong.</p>
+        <pre>{error}</pre>
+        <button onClick={() => window.location.reload()}>Reload App</button>
+      </div>
+    );
   }
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
+  return (
+    <ErrorCatcher onError={setError}>
+      {children}
+    </ErrorCatcher>
+  );
+}
+
+class ErrorCatcher extends React.Component {
   componentDidCatch(error) {
-    console.error("GLOBAL CONNECT:", error);
+    this.props.onError(error?.message || "Unknown application error");
   }
   render() {
-    if (this.state.error) {
-      return <div className="gc-loading">
-        <h2>Something went wrong</h2>
-        <p>{this.state.error.message}</p>
-        <button onClick={() => window.location.reload()}>Reload</button>
-      </div>;
-    }
     return this.props.children;
   }
 }
 
 function App() {
-  const [user, setUser] = useState(null);
-  const [checking, setChecking] = useState(true);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [page, setPage] = useState("Home");
-  const [notice, setNotice] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
-
-  const [profile, setProfile] = useState({
-    display_name: "", bio: "", avatar_url: "", cover_url: ""
-  });
-
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [profile, setProfile] = useState(null);
+  const [profiles, setProfiles] = useState([]);
   const [posts, setPosts] = useState([]);
-  const [postText, setPostText] = useState("");
-  const [postFile, setPostFile] = useState(null);
-  const [posting, setPosting] = useState(false);
-  const [loadingPosts, setLoadingPosts] = useState(false);
-  const [deletingPost, setDeletingPost] = useState(null);
-
-  const [people, setPeople] = useState([]);
-  const [loadingPeople, setLoadingPeople] = useState(false);
-
   const [connections, setConnections] = useState([]);
-  const [connectionProfiles, setConnectionProfiles] = useState([]);
-  const [loadingConnections, setLoadingConnections] = useState(false);
-  const [connectionAction, setConnectionAction] = useState(null);
-
-  const [selectedChat, setSelectedChat] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [stories, setStories] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [rooms, setRooms] = useState([]);
+  const [selectedChat, setSelectedChat] = useState(null);
+  const [selectedStory, setSelectedStory] = useState(null);
+  const [search, setSearch] = useState("");
   const [messageText, setMessageText] = useState("");
-  const [loadingMessages, setLoadingMessages] = useState(false);
-  const [sendingMessage, setSendingMessage] = useState(false);
-  const [chatSearch, setChatSearch] = useState("");
+  const [postText, setPostText] = useState("");
+  const [commentText, setCommentText] = useState({});
+  const [openComments, setOpenComments] = useState({});
+  const [comments, setComments] = useState({});
+  const [likedPosts, setLikedPosts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [profileEdit, setProfileEdit] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editBio, setEditBio] = useState("");
+  const [roomTitle, setRoomTitle] = useState("");
+  const [activeRoom, setActiveRoom] = useState(null);
+  const [callState, setCallState] = useState("idle");
+  const [callMode, setCallMode] = useState("video");
+  const [callPeer, setCallPeer] = useState(null);
+  const [randomStatus, setRandomStatus] = useState("idle");
+  const [randomPartner, setRandomPartner] = useState(null);
+  const [settings, setSettings] = useState({ private: false, notifications: true });
+  const filePostRef = useRef(null);
+  const fileStoryRef = useRef(null);
+  const fileAvatarRef = useRef(null);
+  const fileCoverRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const realtimeRef = useRef([]);
 
-  const messagesEndRef = useRef(null);
-  const messageInputRef = useRef(null);
+  const user = session?.user || null;
+  const userId = user?.id;
 
-  const menuItems = [
-    "Home", "Social Feed", "Random Video", "Random Audio",
-    "Random Chat", "Messenger", "Discover", "Connections",
-    "Reels", "Live Rooms", "Profile", "Notifications"
-  ];
-
-  const mobileItems = [
-    "Home", "Social Feed", "Discover", "Messenger", "Profile"
-  ];
-
-  const displayName =
-    profile.display_name ||
-    user?.user_metadata?.display_name ||
-    user?.email?.split("@")[0] || "Member";
-
-  function showNotice(message) {
+  const flash = (message) => {
     setNotice(message);
-    window.clearTimeout(showNotice.timer);
-    showNotice.timer = window.setTimeout(() => setNotice(""), 4500);
-  }
+    window.setTimeout(() => setNotice(""), 3500);
+  };
 
   useEffect(() => {
-    let alive = true;
-
-    async function initialize() {
-      const { data, error } = await supabase.auth.getSession();
-      if (!alive) return;
-      if (error) console.error(error);
-      setUser(data?.session?.user || null);
-      setChecking(false);
-    }
-
-    initialize();
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUser(session?.user || null);
-        setChecking(false);
-      }
-    );
-
+    let mounted = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) flash(error.message);
+      setSession(data?.session || null);
+      setAuthLoading(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
     return () => {
-      alive = false;
-      listener?.subscription?.unsubscribe();
+      mounted = false;
+      data?.subscription?.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (!user) {
-      setProfile({
-        display_name: "", bio: "", avatar_url: "", cover_url: ""
+    if (!userId) return;
+    loadEverything();
+    return () => {
+      realtimeRef.current.forEach(channel => {
+        try { supabase.removeChannel(channel); } catch {}
       });
-      setPosts([]);
-      setPeople([]);
-      setConnections([]);
-      setConnectionProfiles([]);
-      setSelectedChat(null);
-      setMessages([]);
-      return;
-    }
-
-    loadProfile();
-    loadPosts();
-    loadConnections();
-  }, [user?.id]);
+      realtimeRef.current = [];
+    };
+  }, [userId]);
 
   useEffect(() => {
-    if (page === "Discover") loadPeople();
-    if (page === "Connections") loadConnections();
-    if (page === "Social Feed" || page === "Reels") loadPosts();
-  }, [page]);
-
-  // REALTIME MESSAGING
-  useEffect(() => {
-    if (!user || !selectedChat || page !== "Messenger") return;
-
-    loadMessages(selectedChat.id);
-
-    const channel = supabase
-      .channel(`gc-chat-${user.id}-${selectedChat.id}`)
-      .on("postgres_changes", {
-        event: "*",
-        schema: "public",
-        table: "messages"
-      }, (payload) => {
-        const row = payload.new || payload.old;
-        if (
-          row &&
-          (
-            row.sender_id === user.id ||
-            row.receiver_id === user.id
-          )
-        ) {
-          loadMessages(selectedChat.id);
-        }
-      })
+    if (!userId) return;
+    const channel = supabase.channel(`global-connect-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "posts" }, loadPosts)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, loadChats)
+      .on("postgres_changes", { event: "*", schema: "public", table: "connections" }, loadConnections)
+      .on("postgres_changes", { event: "*", schema: "public", table: "stories" }, loadStories)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, loadNotifications)
       .subscribe();
-
+    realtimeRef.current.push(channel);
     return () => {
       supabase.removeChannel(channel);
+      realtimeRef.current = realtimeRef.current.filter(x => x !== channel);
     };
-  }, [user?.id, selectedChat?.id, page]);
+  }, [userId]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "end"
-    });
+    if (!userId || !selectedChat?.id) return;
+    loadMessages(selectedChat.id);
+    const channel = supabase.channel(`messages-${userId}-${selectedChat.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, payload => {
+        const row = payload.new || payload.old;
+        if (row && (
+          (row.sender_id === userId && row.receiver_id === selectedChat.id) ||
+          (row.sender_id === selectedChat.id && row.receiver_id === userId)
+        )) loadMessages(selectedChat.id);
+      }).subscribe();
+    realtimeRef.current.push(channel);
+    return () => {
+      supabase.removeChannel(channel);
+      realtimeRef.current = realtimeRef.current.filter(x => x !== channel);
+    };
+  }, [userId, selectedChat?.id]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  async function loadEverything() {
+    await Promise.all([
+      loadProfile(), loadPosts(), loadConnections(), loadChats(),
+      loadStories(), loadNotifications(), loadRooms(), loadDiscover()
+    ]);
+  }
+
   async function loadProfile() {
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", user.id)
-      .maybeSingle();
-
+    if (!userId) return;
+    const { data, error } = await supabase.from(TABLES.profiles)
+      .select("*").eq("id", userId).maybeSingle();
     if (error) {
-      showNotice("Profile error: " + error.message);
+      console.error(error);
       return;
     }
-
     if (data) {
-      setProfile({
-        display_name: data.display_name || "",
-        bio: data.bio || "",
-        avatar_url: data.avatar_url || "",
-        cover_url: data.cover_url || ""
-      });
+      setProfile(data);
+      setEditName(data.display_name || "");
+      setEditBio(data.bio || "");
     } else {
-      setProfile(p => ({
-        ...p,
-        display_name:
-          user.user_metadata?.display_name ||
-          user.email?.split("@")[0] || "Member"
-      }));
+      const fallback = {
+        id: userId,
+        display_name: user.email?.split("@")[0] || "New User",
+        bio: "",
+        avatar_url: null,
+        cover_url: null
+      };
+      setProfile(fallback);
+      setEditName(fallback.display_name);
     }
   }
 
   async function loadPosts() {
-    if (!user) return;
-
-    setLoadingPosts(true);
-
-    const { data, error } = await supabase
-      .from("posts")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(100);
-
+    const { data, error } = await supabase.from(TABLES.posts)
+      .select("*").order("created_at", { ascending: false }).limit(100);
     if (error) {
-      showNotice("Posts error: " + error.message);
-      setLoadingPosts(false);
+      console.error("Posts:", error.message);
       return;
     }
-
     const rows = data || [];
-    const ids = [...new Set(
-      rows.map(p => p.user_id || p.author_id).filter(Boolean)
-    )];
-
-    let profiles = [];
-
-    if (ids.length) {
-      const result = await supabase
-        .from("profiles")
-        .select("id,display_name,avatar_url")
-        .in("id", ids);
-
-      if (!result.error) profiles = result.data || [];
+    setPosts(rows);
+    if (userId && rows.length) {
+      const ids = rows.map(p => p.id);
+      const { data: liked } = await supabase.from(TABLES.likes)
+        .select("post_id").eq("user_id", userId).in("post_id", ids);
+      setLikedPosts(Object.fromEntries((liked || []).map(x => [x.post_id, true])));
     }
-
-    const profileMap = Object.fromEntries(
-      profiles.map(p => [p.id, p])
-    );
-
-    setPosts(rows.map(post => {
-      const authorId = post.user_id || post.author_id;
-      const author = profileMap[authorId] || {};
-
-      return {
-        ...post,
-        author_id: authorId,
-        author_name: author.display_name || "Community member",
-        author_avatar: author.avatar_url || ""
-      };
-    }));
-
-    setLoadingPosts(false);
   }
 
-  async function createPost(event) {
-    event.preventDefault();
+  async function loadDiscover() {
+    if (!userId) return;
+    const { data, error } = await supabase.from(TABLES.profiles)
+      .select("*").neq("id", userId).order("updated_at", { ascending: false }).limit(100);
+    if (!error) setProfiles(data || []);
+    else console.error("Discover:", error.message);
+  }
 
-    if (!postText.trim() && !postFile) {
-      return showNotice("पहले कुछ लिखें या फोटो/वीडियो चुनें।");
-    }
-
-    if (postFile && postFile.size > MAX_POST_SIZE) {
-      return showNotice("फाइल 50 MB से छोटी होनी चाहिए।");
-    }
-
-    setPosting(true);
-
-    let mediaUrl = null;
-    let mediaType = null;
-
-    if (postFile) {
-      const ext = postFile.name.split(".").pop()?.toLowerCase() || "file";
-      const path = `${user.id}/${Date.now()}.${ext}`;
-
-      const { error } = await supabase.storage
-        .from("post-media")
-        .upload(path, postFile, {
-          upsert: false,
-          contentType: postFile.type
-        });
-
-      if (error) {
-        showNotice("Upload error: " + error.message);
-        setPosting(false);
-        return;
-      }
-
-      const { data } = supabase.storage
-        .from("post-media")
-        .getPublicUrl(path);
-
-      mediaUrl = data.publicUrl;
-      mediaType = postFile.type.startsWith("video/") ? "video" : "image";
-    }
-
-    const { error } = await supabase.from("posts").insert({
-      user_id: user.id,
-      content: postText.trim(),
-      media_url: mediaUrl,
-      media_type: mediaType
-    });
-
+  async function loadConnections() {
+    if (!userId) return;
+    const { data, error } = await supabase.from(TABLES.connections)
+      .select("*")
+      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+      .order("created_at", { ascending: false });
     if (error) {
-      showNotice("Post error: " + error.message);
-    } else {
-      setPostText("");
-      setPostFile(null);
-      const input = document.getElementById("post-file-input");
-      if (input) input.value = "";
-      showNotice("आपकी पोस्ट publish हो गई!");
-      await loadPosts();
+      console.error("Connections:", error.message);
+      return;
     }
+    const rows = data || [];
+    setConnections(rows);
+    const ids = [...new Set(rows.map(r => r.sender_id === userId ? r.receiver_id : r.sender_id))];
+    if (ids.length) {
+      const { data: people } = await supabase.from(TABLES.profiles).select("*").in("id", ids);
+      setChats(people || []);
+    } else {
+      setChats([]);
+    }
+  }
 
-    setPosting(false);
+  async function loadChats() {
+    if (!userId) return;
+    const { data, error } = await supabase.from(TABLES.messages)
+      .select("*")
+      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+      .order("created_at", { ascending: false }).limit(200);
+    if (error) {
+      console.error("Messages:", error.message);
+      return;
+    }
+    const rows = data || [];
+    const ids = [...new Set(rows.map(m => m.sender_id === userId ? m.receiver_id : m.sender_id))];
+    if (ids.length) {
+      const { data: people } = await supabase.from(TABLES.profiles).select("*").in("id", ids);
+      const map = Object.fromEntries((people || []).map(p => [p.id, p]));
+      setChats(prev => {
+        const merged = new Map(prev.map(p => [p.id, p]));
+        Object.values(map).forEach(p => merged.set(p.id, p));
+        return [...merged.values()];
+      });
+    }
+  }
+
+  async function loadMessages(otherId) {
+    if (!userId || !otherId) return;
+    const { data, error } = await supabase.from(TABLES.messages)
+      .select("*")
+      .or(
+        `and(sender_id.eq.${userId},receiver_id.eq.${otherId}),and(sender_id.eq.${otherId},receiver_id.eq.${userId})`
+      )
+      .order("created_at", { ascending: true }).limit(300);
+    if (error) {
+      flash(`Messages load नहीं हुए: ${error.message}`);
+      return;
+    }
+    setMessages(data || []);
+    await supabase.from(TABLES.messages).update({ read_at: new Date().toISOString() })
+      .eq("sender_id", otherId).eq("receiver_id", userId).is("read_at", null);
+  }
+
+  async function loadStories() {
+    const { data, error } = await supabase.from(TABLES.stories)
+      .select("*").gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false }).limit(100);
+    if (!error) setStories(data || []);
+    else console.error("Stories:", error.message);
+  }
+
+  async function loadNotifications() {
+    if (!userId) return;
+    const { data, error } = await supabase.from(TABLES.notifications)
+      .select("*").eq("user_id", userId)
+      .order("created_at", { ascending: false }).limit(50);
+    if (!error) setNotifications(data || []);
+    else console.error("Notifications:", error.message);
+  }
+
+  async function loadRooms() {
+    const { data, error } = await supabase.from(TABLES.rooms)
+      .select("*").eq("status", "live")
+      .order("created_at", { ascending: false }).limit(50);
+    if (!error) setRooms(data || []);
+    else console.error("Live rooms:", error.message);
+  }
+
+  async function uploadFile(file, bucket, maxSize) {
+    if (!file) return null;
+    if (file.size > maxSize) {
+      flash(`File size ${Math.round(maxSize / 1024 / 1024)}MB से कम रखें`);
+      return null;
+    }
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `${userId}/${Date.now()}-${safeName}`;
+    const { error } = await supabase.storage.from(bucket).upload(path, file, {
+      cacheControl: "3600", upsert: false, contentType: file.type
+    });
+    if (error) {
+      flash(`Upload error: ${error.message}`);
+      return null;
+    }
+    const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+    return data?.publicUrl || null;
+  }
+
+  async function createPost(file) {
+    if (!postText.trim() && !file) return flash("कुछ लिखें या फोटो/वीडियो चुनें");
+    setBusy(true);
+    try {
+      let mediaUrl = null;
+      let mediaType = null;
+      if (file) {
+        mediaUrl = await uploadFile(file, BUCKET_POST, MAX_POST_SIZE);
+        if (!mediaUrl) return;
+        mediaType = file.type.startsWith("video/") ? "video" : "image";
+      }
+      const { error } = await supabase.from(TABLES.posts).insert({
+        user_id: userId,
+        content: postText.trim(),
+        media_url: mediaUrl,
+        media_type: mediaType
+      });
+      if (error) throw error;
+      setPostText("");
+      if (filePostRef.current) filePostRef.current.value = "";
+      await loadPosts();
+      flash("Post publish हो गई!");
+    } catch (e) {
+      flash(`Post error: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function deletePost(post) {
     if (!window.confirm("क्या आप यह पोस्ट delete करना चाहते हैं?")) return;
-
-    setDeletingPost(post.id);
-
-    const { error } = await supabase
-      .from("posts")
-      .delete()
-      .eq("id", post.id)
-      .eq("user_id", user.id);
-
-    if (error) {
-      showNotice("Delete error: " + error.message);
-    } else {
-      setPosts(current => current.filter(p => p.id !== post.id));
-      showNotice("Post deleted.");
+    const { error } = await supabase.from(TABLES.posts)
+      .delete().eq("id", post.id).eq("user_id", userId);
+    if (error) flash(error.message);
+    else {
+      setPosts(prev => prev.filter(p => p.id !== post.id));
+      flash("Post deleted");
     }
-
-    setDeletingPost(null);
   }
 
-  async function loadPeople() {
-    if (!user) return;
-
-    setLoadingPeople(true);
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name,bio,avatar_url")
-      .neq("id", user.id)
-      .order("display_name")
-      .limit(100);
-
-    if (error) {
-      showNotice("Discover error: " + error.message);
-      setPeople([]);
-    } else {
-      setPeople(data || []);
-    }
-
-    setLoadingPeople(false);
-  }
-
-  async function loadConnections() {
-    if (!user) return;
-
-    setLoadingConnections(true);
-
-    const { data, error } = await supabase
-      .from("connections")
-      .select("*")
-      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      showNotice("Connections error: " + error.message);
-      setLoadingConnections(false);
-      return;
-    }
-
-    const rows = data || [];
-    setConnections(rows);
-
-    const ids = [...new Set(
-      rows.map(c =>
-        c.sender_id === user.id ? c.receiver_id : c.sender_id
-      ).filter(Boolean)
-    )];
-
-    if (ids.length) {
-      const result = await supabase
-        .from("profiles")
-        .select("id,display_name,avatar_url,bio")
-        .in("id", ids);
-
-      if (result.error) {
-        showNotice("Connection profiles error: " + result.error.message);
-        setConnectionProfiles([]);
-      } else {
-        setConnectionProfiles(result.data || []);
+  async function toggleLike(post) {
+    const wasLiked = !!likedPosts[post.id];
+    setLikedPosts(prev => ({ ...prev, [post.id]: !wasLiked }));
+    if (wasLiked) {
+      const { error } = await supabase.from(TABLES.likes)
+        .delete().eq("post_id", post.id).eq("user_id", userId);
+      if (error) {
+        setLikedPosts(prev => ({ ...prev, [post.id]: true }));
+        flash(error.message);
       }
     } else {
-      setConnectionProfiles([]);
+      const { error } = await supabase.from(TABLES.likes)
+        .insert({ post_id: post.id, user_id: userId });
+      if (error) {
+        setLikedPosts(prev => ({ ...prev, [post.id]: false }));
+        flash(error.message);
+      }
     }
-
-    setLoadingConnections(false);
   }
 
-  function relationFor(personId) {
-    return connections.find(c =>
-      (c.sender_id === user.id && c.receiver_id === personId) ||
-      (c.receiver_id === user.id && c.sender_id === personId)
-    );
+  async function loadComments(postId) {
+    const { data, error } = await supabase.from(TABLES.comments)
+      .select("*").eq("post_id", postId)
+      .order("created_at", { ascending: true }).limit(100);
+    if (error) return flash(`Comments: ${error.message}`);
+    const rows = data || [];
+    const ids = [...new Set(rows.map(c => c.user_id))];
+    let people = [];
+    if (ids.length) {
+      const result = await supabase.from(TABLES.profiles).select("*").in("id", ids);
+      people = result.data || [];
+    }
+    const map = Object.fromEntries(people.map(p => [p.id, p]));
+    setComments(prev => ({
+      ...prev,
+      [postId]: rows.map(c => ({ ...c, author: map[c.user_id] }))
+    }));
   }
 
-  async function sendConnectionRequest(personId) {
-    if (!user || !personId || personId === user.id) return;
-
-    setConnectionAction(personId);
-
-    const existing = relationFor(personId);
-
-    if (existing?.status === "accepted") {
-      showNotice("You are already connected.");
-      setConnectionAction(null);
-      return;
-    }
-
-    if (existing?.status === "pending") {
-      showNotice("A connection request already exists.");
-      setConnectionAction(null);
-      return;
-    }
-
-    const { error } = await supabase.from("connections").insert({
-      sender_id: user.id,
-      receiver_id: personId,
-      status: "pending"
+  async function addComment(postId) {
+    const content = (commentText[postId] || "").trim();
+    if (!content) return;
+    const { error } = await supabase.from(TABLES.comments).insert({
+      post_id: postId, user_id: userId, content
     });
-
-    if (error) {
-      showNotice("Request error: " + error.message);
-    } else {
-      showNotice("Connection request sent!");
-      await loadConnections();
-    }
-
-    setConnectionAction(null);
+    if (error) return flash(error.message);
+    setCommentText(prev => ({ ...prev, [postId]: "" }));
+    await loadComments(postId);
+    flash("Comment added");
   }
 
-  async function respondToConnection(connectionId, status) {
-    if (!["accepted", "rejected"].includes(status)) return;
-
-    setConnectionAction(connectionId);
-
-    const { error } = await supabase
-      .from("connections")
-      .update({ status })
-      .eq("id", connectionId)
-      .eq("receiver_id", user.id);
-
-    if (error) {
-      showNotice("Request update error: " + error.message);
-    } else {
-      showNotice(status === "accepted"
-        ? "Connection accepted!"
-        : "Request rejected."
-      );
-      await loadConnections();
+  async function createStory(file) {
+    if (!file) return;
+    const url = await uploadFile(file, BUCKET_POST, MAX_POST_SIZE);
+    if (!url) return;
+    const { error } = await supabase.from(TABLES.stories).insert({
+      user_id: userId,
+      media_url: url,
+      media_type: file.type.startsWith("video/") ? "video" : "image",
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    });
+    if (error) flash(`Story error: ${error.message}`);
+    else {
+      await loadStories();
+      flash("Your story is live for 24 hours!");
     }
-
-    setConnectionAction(null);
   }
 
-  async function saveProfile(event) {
-    event.preventDefault();
-    setBusy(true);
+  async function sendMessage() {
+    const content = messageText.trim();
+    if (!content || !selectedChat) return;
+    setMessageText("");
+    const { error } = await supabase.from(TABLES.messages).insert({
+      sender_id: userId, receiver_id: selectedChat.id, content
+    });
+    if (error) {
+      setMessageText(content);
+      flash(`Message error: ${error.message}`);
+    } else {
+      await loadMessages(selectedChat.id);
+      await loadChats();
+    }
+  }
 
+  async function sendConnection(person) {
+    const existing = connections.find(c =>
+      (c.sender_id === userId && c.receiver_id === person.id) ||
+      (c.sender_id === person.id && c.receiver_id === userId)
+    );
+    if (existing) return flash(`Connection status: ${existing.status}`);
+    const { error } = await supabase.from(TABLES.connections).insert({
+      sender_id: userId, receiver_id: person.id, status: "pending"
+    });
+    if (error) flash(error.message);
+    else {
+      flash("Connection request sent!");
+      await loadConnections();
+    }
+  }
+
+  async function updateConnection(connection, status) {
+    const { error } = await supabase.from(TABLES.connections)
+      .update({ status }).eq("id", connection.id).eq("receiver_id", userId);
+    if (error) flash(error.message);
+    else {
+      flash(status === "accepted" ? "Connection accepted" : "Request rejected");
+      await loadConnections();
+    }
+  }
+
+  async function saveProfile() {
     const payload = {
-      id: user.id,
-      display_name: profile.display_name.trim() || "Member",
-      bio: profile.bio.trim(),
-      avatar_url: profile.avatar_url,
-      cover_url: profile.cover_url,
+      id: userId,
+      display_name: editName.trim() || "User",
+      bio: editBio.trim(),
       updated_at: new Date().toISOString()
     };
-
-    const { error } = await supabase
-      .from("profiles")
+    const { error } = await supabase.from(TABLES.profiles)
       .upsert(payload, { onConflict: "id" });
-
-    if (error) {
-      showNotice("Profile save error: " + error.message);
-    } else {
-      showNotice("Profile saved successfully!");
-    }
-
-    setBusy(false);
+    if (error) return flash(error.message);
+    await loadProfile();
+    setProfileEdit(false);
+    flash("Profile updated");
   }
 
   async function uploadProfileImage(file, field) {
-    if (!file) return;
-
-    if (file.size > MAX_PROFILE_SIZE) {
-      return showNotice("Image 5 MB से छोटी होनी चाहिए।");
+    const url = await uploadFile(file, BUCKET_PROFILE, MAX_PROFILE_SIZE);
+    if (!url) return;
+    const { error } = await supabase.from(TABLES.profiles)
+      .upsert({ id: userId, [field]: url, updated_at: new Date().toISOString() }, { onConflict: "id" });
+    if (error) flash(error.message);
+    else {
+      await loadProfile();
+      flash("Profile image updated");
     }
-
-    setBusy(true);
-
-    const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-    const path = `${user.id}/${field}-${Date.now()}.${ext}`;
-
-    const { error } = await supabase.storage
-      .from("profile-media")
-      .upload(path, file, {
-        upsert: true,
-        contentType: file.type
-      });
-
-    if (error) {
-      showNotice("Image upload error: " + error.message);
-      setBusy(false);
-      return;
-    }
-
-    const { data } = supabase.storage
-      .from("profile-media")
-      .getPublicUrl(path);
-
-    setProfile(p => ({ ...p, [field]: data.publicUrl }));
-    setBusy(false);
-    showNotice("Image uploaded. अब Save Profile दबाएँ।");
   }
 
-  // LOAD PRIVATE CHAT MESSAGES
-  async function loadMessages(otherUserId) {
-    if (!user || !otherUserId) return;
-
-    setLoadingMessages(true);
-
-    const { data, error } = await supabase
-      .from("messages")
-      .select("*")
-      .or(
-        `and(sender_id.eq.${user.id},receiver_id.eq.${otherUserId}),and(sender_id.eq.${otherUserId},receiver_id.eq.${user.id})`
-      )
-      .order("created_at", { ascending: true })
-      .limit(200);
-
-    if (error) {
-      showNotice("Messages error: " + error.message);
-      setLoadingMessages(false);
-      return;
-    }
-
-    setMessages(data || []);
-
-    const unreadIds = (data || [])
-      .filter(m => m.receiver_id === user.id && !m.read_at)
-      .map(m => m.id);
-
-    if (unreadIds.length) {
-      const { error: readError } = await supabase
-        .from("messages")
-        .update({ read_at: new Date().toISOString() })
-        .in("id", unreadIds);
-
-      if (readError) {
-        console.error("Read status error:", readError);
-      }
-    }
-
-    setLoadingMessages(false);
+  async function createRoom() {
+    const title = roomTitle.trim() || `${profile?.display_name || "User"}'s Live Room`;
+    const { data, error } = await supabase.from(TABLES.rooms).insert({
+      host_id: userId, title, status: "live"
+    }).select().single();
+    if (error) return flash(`Room error: ${error.message}`);
+    setActiveRoom(data);
+    setRoomTitle("");
+    await loadRooms();
+    flash("Live room created");
   }
 
-  async function sendMessage(event) {
-    event.preventDefault();
+  async function joinRoom(room) {
+    const { error } = await supabase.from(TABLES.participants).upsert({
+      room_id: room.id, user_id: userId, joined_at: new Date().toISOString()
+    }, { onConflict: "room_id,user_id" });
+    if (error) return flash(`Join room: ${error.message}`);
+    setActiveRoom(room);
+    flash("You joined the room");
+  }
 
-    const content = messageText.trim();
-    if (!content || !selectedChat || sendingMessage) return;
-
-    setSendingMessage(true);
-
-    const { error } = await supabase.from("messages").insert({
-      sender_id: user.id,
-      receiver_id: selectedChat.id,
-      content
-    });
-
-    if (error) {
-      showNotice("Message send error: " + error.message);
-    } else {
-      setMessageText("");
-      await loadMessages(selectedChat.id);
-      messageInputRef.current?.focus();
+  async function leaveRoom() {
+    if (!activeRoom) return;
+    await supabase.from(TABLES.participants)
+      .delete().eq("room_id", activeRoom.id).eq("user_id", userId);
+    if (activeRoom.host_id === userId) {
+      await supabase.from(TABLES.rooms).update({
+        status: "ended", ended_at: new Date().toISOString()
+      }).eq("id", activeRoom.id);
     }
+    setActiveRoom(null);
+    await loadRooms();
+  }
 
-    setSendingMessage(false);
+  async function startRandomChat(mode) {
+    setCallMode(mode);
+    setRandomStatus("searching");
+    setRandomPartner(null);
+    const { error } = await supabase.from(TABLES.queue).upsert({
+      user_id: userId, mode, status: "waiting", created_at: new Date().toISOString()
+    }, { onConflict: "user_id" });
+    if (error) {
+      setRandomStatus("idle");
+      flash(`Random matching setup needed: ${error.message}`);
+      return;
+    }
+    flash("Searching for someone...");
+  }
+
+  async function stopRandomChat() {
+    await supabase.from(TABLES.queue).delete().eq("user_id", userId);
+    setRandomStatus("idle");
+    setRandomPartner(null);
+  }
+
+  async function startDirectCall(person, mode) {
+    setCallPeer(person);
+    setCallMode(mode);
+    setCallState("starting");
+    flash("Calling setup: WebRTC signaling backend required");
   }
 
   async function logout() {
     await supabase.auth.signOut();
-    setUser(null);
-    setPage("Home");
-    showNotice("You have been logged out.");
+    setSession(null);
+  }
+
+  async function markNotificationRead(notification) {
+    const { error } = await supabase.from(TABLES.notifications)
+      .update({ read: true }).eq("id", notification.id).eq("user_id", userId);
+    if (!error) loadNotifications();
   }
 
   const acceptedConnections = useMemo(
-    () => connections.filter(c => c.status === "accepted"),
-    [connections]
+    () => connections.filter(c => c.status === "accepted"), [connections]
   );
-
   const incomingRequests = useMemo(
-    () => connections.filter(c =>
-      c.receiver_id === user?.id && c.status === "pending"
-    ),
-    [connections, user?.id]
+    () => connections.filter(c => c.receiver_id === userId && c.status === "pending"), [connections, userId]
   );
-
-  const connectedPeople = useMemo(
-    () => acceptedConnections
-      .map(c => connectionProfiles.find(p =>
-        p.id === (
-          c.sender_id === user?.id ? c.receiver_id : c.sender_id
-        )
-      ))
-      .filter(Boolean),
-    [acceptedConnections, connectionProfiles, user?.id]
+  const pendingSent = useMemo(
+    () => connections.filter(c => c.sender_id === userId && c.status === "pending"), [connections, userId]
   );
-
-  const filteredChats = useMemo(() => {
-    const query = chatSearch.trim().toLowerCase();
-    if (!query) return connectedPeople;
-
-    return connectedPeople.filter(person =>
-      (person.display_name || "").toLowerCase().includes(query)
+  const filteredPeople = useMemo(() => {
+    const q = search.toLowerCase();
+    return profiles.filter(p =>
+      (p.display_name || "").toLowerCase().includes(q) ||
+      (p.bio || "").toLowerCase().includes(q)
     );
-  }, [connectedPeople, chatSearch]);
+  }, [profiles, search]);
 
-  function openPage(item) {
-    setPage(item);
-    setMoreOpen(false);
+  const unreadNotifications = notifications.filter(n => !n.read).length;
+  const myPosts = posts.filter(p => p.user_id === userId);
+  const videoPosts = posts.filter(p => p.media_type === "video");
 
-    if (item !== "Messenger") {
-      setSelectedChat(null);
-      setMessages([]);
-    }
+  if (authLoading) {
+    return <div className="gc-loading"><div className="gc-spinner" /><h2>GLOBAL CONNECT</h2><p>Connecting you to the world...</p></div>;
   }
+  if (!session) return <Auth />;
 
-  function openChat(person) {
-    setSelectedChat(person);
-    setMessages([]);
-    setPage("Messenger");
-    setMessageText("");
-  }
-
-  function Avatar({ src, name, size = 42 }) {
-    const fallback =
-      "https://ui-avatars.com/api/?name=" +
-      encodeURIComponent(name || "User") +
-      "&background=243047&color=fff";
-
+  function PageHeader({ title, subtitle, action }) {
     return (
-      <img
-        className="gc-avatar"
-        src={src || fallback}
-        alt={name || "User"}
-        style={{ width: size, height: size }}
-      />
-    );
-  }
-
-  function PersonCard({ person }) {
-    const relation = relationFor(person.id);
-
-    const incoming =
-      relation?.receiver_id === user.id &&
-      relation?.status === "pending";
-
-    const outgoing =
-      relation?.sender_id === user.id &&
-      relation?.status === "pending";
-
-    const accepted = relation?.status === "accepted";
-
-    return (
-      <article className="gc-person-card">
-        <Avatar src={person.avatar_url} name={person.display_name} size={54} />
-
-        <div className="gc-person-info">
-          <strong>{person.display_name || "Community member"}</strong>
-          <p>{person.bio || "I love meeting new people and connecting with the world. 🌍"}</p>
-        </div>
-
-        {accepted ? (
-          <span className="gc-status">Connected</span>
-        ) : incoming ? (
-          <div className="gc-actions">
-            <button disabled={connectionAction === relation.id}
-              onClick={() => respondToConnection(relation.id, "accepted")}>
-              Accept
-            </button>
-            <button className="secondary-btn"
-              disabled={connectionAction === relation.id}
-              onClick={() => respondToConnection(relation.id, "rejected")}>
-              Reject
-            </button>
-          </div>
-        ) : outgoing ? (
-          <span className="gc-status">Request Sent</span>
-        ) : (
-          <button disabled={connectionAction === person.id}
-            onClick={() => sendConnectionRequest(person.id)}>
-            {connectionAction === person.id ? "Sending..." : "Connect"}
-          </button>
-        )}
-      </article>
-    );
-  }
-
-  function PostCard({ post }) {
-    const mediaUrl = post.media_url || post.image_url || post.file_url;
-
-    const isVideo =
-      post.media_type === "video" ||
-      (mediaUrl && /\.(mp4|webm|mov)(\?|$)/i.test(mediaUrl));
-
-    return (
-      <article className="gc-post-card">
-        <div className="gc-post-head">
-          <Avatar src={post.author_avatar} name={post.author_name} />
-          <div className="gc-post-author">
-            <strong>{post.author_name}</strong>
-            <small>{post.created_at ? new Date(post.created_at).toLocaleString() : ""}</small>
-          </div>
-          {(post.author_id === user.id || post.user_id === user.id) && (
-            <button className="gc-delete"
-              disabled={deletingPost === post.id}
-              onClick={() => deletePost(post)}>
-              Delete
-            </button>
-          )}
-        </div>
-
-        {post.content && <p className="gc-post-text">{post.content}</p>}
-
-        {mediaUrl && (isVideo
-          ? <video className="gc-post-media" src={mediaUrl} controls playsInline />
-          : <img className="gc-post-media" src={mediaUrl} alt="Post media" />
-        )}
-      </article>
-    );
-  }
-
-  if (checking) {
-    return (
-      <div className="gc-loading">
-        <div className="gc-spinner" />
-        <h2>GLOBAL CONNECT</h2>
-        <p>Loading your world...</p>
+      <div className="gc-page-header">
+        <div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>
+        {action}
       </div>
     );
   }
 
-  if (!user) {
+  function PersonCard({ person }) {
+    const relation = connections.find(c =>
+      (c.sender_id === userId && c.receiver_id === person.id) ||
+      (c.sender_id === person.id && c.receiver_id === userId)
+    );
+    const isConnected = relation?.status === "accepted";
+    return (
+      <div className="gc-person-card">
+        <Avatar src={person.avatar_url} name={person.display_name} size={54} />
+        <div className="gc-person-info">
+          <b>{person.display_name || "GLOBAL CONNECT User"}</b>
+          <span>{person.bio || "Ready to connect with the world."}</span>
+        </div>
+        {isConnected
+          ? <button className="gc-btn gc-btn-muted" onClick={() => { setSelectedChat(person); setPage("Messenger"); }}><MessageCircle size={16}/> Message</button>
+          : relation
+            ? <button className="gc-btn gc-btn-muted" disabled>{relation.status === "pending" ? "Request Sent" : relation.status}</button>
+            : <button className="gc-btn" onClick={() => sendConnection(person)}><UserPlus size={16}/> Connect</button>}
+      </div>
+    );
+  }
+
+  function PostCard({ post }) {
+    const author = post.user_id === userId ? profile : profiles.find(p => p.id === post.user_id);
+    const isOpen = !!openComments[post.id];
+    return (
+      <article className="gc-post">
+        <div className="gc-post-top">
+          <Avatar src={author?.avatar_url} name={author?.display_name || "User"} />
+          <div className="gc-post-author">
+            <b>{author?.display_name || "GLOBAL CONNECT User"}</b>
+            <span>{timeAgo(post.created_at)}</span>
+          </div>
+          {post.user_id === userId && (
+            <button className="gc-icon-btn" onClick={() => deletePost(post)} title="Delete post"><Trash2 size={17}/></button>
+          )}
+        </div>
+        {post.content && <p className="gc-post-text">{post.content}</p>}
+        {post.media_url && (
+          <div className="gc-post-media">
+            {post.media_type === "video"
+              ? <video src={post.media_url} controls playsInline />
+              : <img src={post.media_url} alt="Post media" />}
+          </div>
+        )}
+        <div className="gc-post-actions">
+          <button className={likedPosts[post.id] ? "gc-action gc-liked" : "gc-action"} onClick={() => toggleLike(post)}>
+            <Heart size={19} fill={likedPosts[post.id] ? "currentColor" : "none"}/> {likedPosts[post.id] ? "Liked" : "Like"}
+          </button>
+          <button className="gc-action" onClick={() => {
+            setOpenComments(prev => ({ ...prev, [post.id]: !prev[post.id] }));
+            if (!comments[post.id]) loadComments(post.id);
+          }}><MessageSquare size={19}/> Comment</button>
+          <button className="gc-action" onClick={() => {
+            if (navigator.share) navigator.share({ title: "GLOBAL CONNECT", text: post.content || "Check out this post", url: window.location.href }).catch(() => {});
+            else flash("Share इस डिवाइस पर उपलब्ध नहीं है");
+          }}><Share2 size={18}/> Share</button>
+        </div>
+        {isOpen && (
+          <div className="gc-comments">
+            {(comments[post.id] || []).map(c => (
+              <div className="gc-comment" key={c.id}>
+                <Avatar src={c.author?.avatar_url} name={c.author?.display_name || "User"} size={30}/>
+                <div><b>{c.author?.display_name || "User"}</b><p>{c.content}</p></div>
+              </div>
+            ))}
+            <div className="gc-comment-input">
+              <input value={commentText[post.id] || ""} onChange={e => setCommentText(prev => ({ ...prev, [post.id]: e.target.value }))} placeholder="Write a comment..." onKeyDown={e => e.key === "Enter" && addComment(post.id)} />
+              <button className="gc-btn gc-btn-small" onClick={() => addComment(post.id)}><Send size={15}/></button>
+            </div>
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  function Composer() {
+    return (
+      <div className="gc-composer">
+        <div className="gc-composer-row">
+          <Avatar src={profile?.avatar_url} name={profile?.display_name} />
+          <textarea value={postText} onChange={e => setPostText(e.target.value)} placeholder="What's happening? Share something with the world..." rows={2}/>
+        </div>
+        <div className="gc-composer-bottom">
+          <input ref={filePostRef} type="file" accept="image/*,video/*" hidden onChange={e => createPost(e.target.files?.[0])}/>
+          <button className="gc-action" onClick={() => filePostRef.current?.click()}><Image size={18}/> Photo / Video</button>
+          <button className="gc-btn" disabled={busy} onClick={() => createPost(null)}>{busy ? "Posting..." : <><Send size={16}/> Publish</>}</button>
+        </div>
+      </div>
+    );
+  }
+
+  function StoriesStrip() {
+    const storyOwners = [...new Map(stories.map(s => [s.user_id, s])).values()];
+    return (
+      <div className="gc-stories-strip">
+        <button className="gc-story-add" onClick={() => fileStoryRef.current?.click()}>
+          <span><Plus size={25}/></span><small>Your Story</small>
+        </button>
+        <input ref={fileStoryRef} hidden type="file" accept="image/*,video/*" onChange={e => createStory(e.target.files?.[0])}/>
+        {storyOwners.map(story => {
+          const owner = story.user_id === userId ? profile : profiles.find(p => p.id === story.user_id);
+          return (
+            <button className="gc-story-item" key={story.id} onClick={() => setSelectedStory(story)}>
+              <span className="gc-story-ring"><Avatar src={owner?.avatar_url} name={owner?.display_name || "User"} size={54}/></span>
+              <small>{owner?.display_name || "Member"}</small>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function HomePage() {
     return (
       <>
-        <Auth onLogin={setUser} />
-        {notice && <div className="gc-toast">{notice}</div>}
+        <PageHeader title={`Welcome, ${profile?.display_name || "Friend"} 👋`} subtitle="Meet people, share moments and explore the world."/>
+        <div className="gc-welcome-banner">
+          <div><span>🌍 GLOBAL CONNECT</span><h2>Meet the World</h2><p>Your world. Your people. Your stories.</p></div>
+          <Globe size={75}/>
+        </div>
+        <div className="gc-stats-grid">
+          <div className="gc-stat"><Users/><b>{acceptedConnections.length}</b><span>Connections</span></div>
+          <div className="gc-stat"><Image/><b>{myPosts.length}</b><span>Your Posts</span></div>
+          <div className="gc-stat"><MessageCircle/><b>{chats.length}</b><span>People</span></div>
+          <div className="gc-stat"><Bell/><b>{unreadNotifications}</b><span>Notifications</span></div>
+        </div>
+        <PageHeader title="Explore GLOBAL CONNECT" subtitle="Jump into your community."/>
+        <div className="gc-feature-grid">
+          {[
+            ["Social Feed","Share photos, videos and updates",Image],
+            ["Discover","Find new people around the world",Compass],
+            ["Messenger","Chat privately with connections",MessageCircle],
+            ["Live Rooms","Join live community rooms",Radio],
+            ["Reels","Watch short videos",Film],
+            ["Random Chat","Meet someone new",Globe]
+          ].map(([name, desc, Icon]) => (
+            <button className="gc-feature-card" key={name} onClick={() => setPage(name)}>
+              <Icon size={25}/><b>{name}</b><span>{desc}</span>
+            </button>
+          ))}
+        </div>
+        <PageHeader title="Recent Posts"/>
+        {posts.slice(0, 3).map(post => <PostCard key={post.id} post={post}/>)}
       </>
     );
   }
 
+  function FeedPage() {
+    return (
+      <>
+        <PageHeader title="Social Feed" subtitle="Share your moments with the world."/>
+        <Composer/>
+        <StoriesStrip/>
+        {posts.length ? posts.map(post => <PostCard key={post.id} post={post}/>) : <div className="gc-empty">No posts yet. Be the first to share something!</div>}
+      </>
+    );
+  }
+
+  function StoriesPage() {
+    return (
+      <>
+        <PageHeader title="Stories" subtitle="Stories disappear after 24 hours." action={<button className="gc-btn" onClick={() => fileStoryRef.current?.click()}><Plus size={16}/> Add Story</button>}/>
+        <input ref={fileStoryRef} hidden type="file" accept="image/*,video/*" onChange={e => createStory(e.target.files?.[0])}/>
+        <StoriesStrip/>
+        <div className="gc-story-grid">
+          {stories.map(story => {
+            const owner = story.user_id === userId ? profile : profiles.find(p => p.id === story.user_id);
+            return <button className="gc-story-tile" key={story.id} onClick={() => setSelectedStory(story)}>
+              {story.media_type === "video" ? <video src={story.media_url}/> : <img src={story.media_url}/>}
+              <span><Avatar src={owner?.avatar_url} name={owner?.display_name} size={30}/>{owner?.display_name || "Member"}</span>
+            </button>;
+          })}
+        </div>
+      </>
+    );
+  }
+
+  function ReelsPage() {
+    return (
+      <>
+        <PageHeader title="Reels" subtitle="Short videos shared by the community."/>
+        <div className="gc-reels-grid">
+          {videoPosts.map(post => {
+            const author = post.user_id === userId ? profile : profiles.find(p => p.id === post.user_id);
+            return <div className="gc-reel" key={post.id}>
+              <video src={post.media_url} controls playsInline />
+              <div><b>{author?.display_name || "Member"}</b><p>{post.content}</p></div>
+            </div>;
+          })}
+        </div>
+        {!videoPosts.length && <div className="gc-empty">No reels yet. Share a video in Social Feed to get started.</div>}
+      </>
+    );
+  }
+
+  function DiscoverPage() {
+    return (
+      <>
+        <PageHeader title="Discover People" subtitle="Find new connections around the world." action={<button className="gc-icon-btn" onClick={loadDiscover}><RefreshCw/></button>}/>
+        <div className="gc-search"><Search size={18}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search people by name or bio..."/></div>
+        <div className="gc-people-list">
+          {filteredPeople.map(person => <PersonCard key={person.id} person={person}/>)}
+        </div>
+        {!filteredPeople.length && <div className="gc-empty">No people found.</div>}
+      </>
+    );
+  }
+
+  function ConnectionsPage() {
+    const acceptedIds = acceptedConnections.map(c => c.sender_id === userId ? c.receiver_id : c.sender_id);
+    const acceptedPeople = profiles.filter(p => acceptedIds.includes(p.id));
+    const pendingPeople = profiles.filter(p => incomingRequests.some(c => c.sender_id === p.id));
+    return (
+      <>
+        <PageHeader title="Connections" subtitle="Manage your connection requests and friends." action={<button className="gc-icon-btn" onClick={loadConnections}><RefreshCw/></button>}/>
+        <h3 className="gc-section-title">Incoming Requests ({incomingRequests.length})</h3>
+        {incomingRequests.map(req => {
+          const person = profiles.find(p => p.id === req.sender_id);
+          return <div className="gc-person-card" key={req.id}>
+            <Avatar src={person?.avatar_url} name={person?.display_name}/>
+            <div className="gc-person-info"><b>{person?.display_name || "Member"}</b><span>Wants to connect with you</span></div>
+            <button className="gc-btn" onClick={() => updateConnection(req, "accepted")}><Check size={16}/> Accept</button>
+            <button className="gc-btn gc-btn-muted" onClick={() => updateConnection(req, "rejected")}>Reject</button>
+          </div>;
+        })}
+        {!incomingRequests.length && <div className="gc-empty">No new requests.</div>}
+        <h3 className="gc-section-title">Your Connections ({acceptedPeople.length})</h3>
+        {acceptedPeople.map(person => <PersonCard key={person.id} person={person}/>)}
+        <h3 className="gc-section-title">Requests Sent ({pendingSent.length})</h3>
+        {pendingSent.map(req => {
+          const person = profiles.find(p => p.id === req.receiver_id);
+          return <div className="gc-person-card" key={req.id}><Avatar src={person?.avatar_url} name={person?.display_name}/><div className="gc-person-info"><b>{person?.display_name || "Member"}</b><span>Waiting for response</span></div><span className="gc-status">Pending</span></div>;
+        })}
+      </>
+    );
+  }
+
+  function MessengerPage() {
+    return (
+      <>
+        <PageHeader title="Messenger" subtitle="Connect privately with your friends." action={<button className="gc-icon-btn" onClick={loadChats}><RefreshCw/></button>}/>
+        <div className="gc-messenger">
+          <aside className={`gc-chat-list ${selectedChat ? "gc-chat-list-hide" : ""}`}>
+            <h3>Chats</h3>
+            {chats.map(person => (
+              <button className={`gc-chat-person ${selectedChat?.id === person.id ? "active" : ""}`} key={person.id} onClick={() => setSelectedChat(person)}>
+                <Avatar src={person.avatar_url} name={person.display_name}/>
+                <span><b>{person.display_name || "Member"}</b><small>Tap to open conversation</small></span>
+              </button>
+            ))}
+            {!chats.length && <div className="gc-empty">Connect with people to start chatting.</div>}
+          </aside>
+          <section className={`gc-chat-window ${!selectedChat ? "gc-chat-window-hide" : ""}`}>
+            {selectedChat ? <>
+              <div className="gc-chat-head">
+                <button className="gc-icon-btn gc-mobile-back" onClick={() => setSelectedChat(null)}><ArrowLeft/></button>
+                <Avatar src={selectedChat.avatar_url} name={selectedChat.display_name}/>
+                <div><b>{selectedChat.display_name}</b><small>GLOBAL CONNECT</small></div>
+                <div className="gc-chat-head-actions">
+                  <button className="gc-icon-btn" onClick={() => startDirectCall(selectedChat, "audio")}><Phone size={18}/></button>
+                  <button className="gc-icon-btn" onClick={() => startDirectCall(selectedChat, "video")}><Video size={18}/></button>
+                </div>
+              </div>
+              <div className="gc-chat-messages">
+                {messages.map(m => {
+                  const mine = m.sender_id === userId;
+                  return <div className={`gc-message-row ${mine ? "mine" : ""}`} key={m.id}>
+                    <div className="gc-message-bubble">
+                      <p>{m.content}</p>
+                      <small>{new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} {mine && (m.read_at ? <><CheckCheck size={13}/> Seen</> : <Check size={13}/>)}</small>
+                    </div>
+                  </div>;
+                })}
+                <div ref={chatEndRef}/>
+              </div>
+              <div className="gc-chat-compose">
+                <input value={messageText} onChange={e => setMessageText(e.target.value)} placeholder="Type a message..." onKeyDown={e => e.key === "Enter" && sendMessage()}/>
+                <button className="gc-btn" onClick={sendMessage}><Send size={17}/></button>
+              </div>
+            </> : <div className="gc-chat-placeholder"><MessageCircle size={48}/><h3>Your conversations</h3><p>Select a chat to start messaging.</p></div>}
+          </section>
+        </div>
+      </>
+    );
+  }
+
+  function NotificationsPage() {
+    return (
+      <>
+        <PageHeader title="Notifications" subtitle="Stay updated with your community." action={<button className="gc-icon-btn" onClick={loadNotifications}><RefreshCw/></button>}/>
+        {notifications.map(n => (
+          <button className={`gc-notification ${n.read ? "" : "unread"}`} key={n.id} onClick={() => markNotificationRead(n)}>
+            <span className="gc-notification-icon"><Bell size={20}/></span>
+            <span><b>{n.title || "New notification"}</b><small>{n.message || n.content || "You have an update."}</small><small>{timeAgo(n.created_at)}</small></span>
+            {!n.read && <i/>}
+          </button>
+        ))}
+        {!notifications.length && <div className="gc-empty">You are all caught up. No notifications yet.</div>}
+      </>
+    );
+  }
+
+  function ProfilePage() {
+    return (
+      <>
+        <PageHeader title="My Profile" subtitle="Your identity on GLOBAL CONNECT." action={<button className="gc-btn" onClick={() => setProfileEdit(v => !v)}><Edit3 size={16}/> Edit Profile</button>}/>
+        <div className="gc-profile-card">
+          <div className="gc-cover" style={profile?.cover_url ? { backgroundImage: `url(${profile.cover_url})` } : {}}>
+            <button className="gc-cover-edit" onClick={() => fileCoverRef.current?.click()}><Camera size={17}/> Cover</button>
+            <input ref={fileCoverRef} hidden type="file" accept="image/*" onChange={e => uploadProfileImage(e.target.files?.[0], "cover_url")}/>
+          </div>
+          <div className="gc-profile-main">
+            <div className="gc-profile-avatar">
+              <Avatar src={profile?.avatar_url} name={profile?.display_name} size={100}/>
+              <button onClick={() => fileAvatarRef.current?.click()}><Camera size={15}/></button>
+              <input ref={fileAvatarRef} hidden type="file" accept="image/*" onChange={e => uploadProfileImage(e.target.files?.[0], "avatar_url")}/>
+            </div>
+            <h2>{profile?.display_name || "Your Name"}</h2>
+            <p>{profile?.bio || "Add a bio to tell people about yourself."}</p>
+            <span>{user?.email}</span>
+          </div>
+        </div>
+        {profileEdit && (
+          <div className="gc-panel">
+            <h3>Edit your profile</h3>
+            <label>Display Name</label>
+            <input value={editName} onChange={e => setEditName(e.target.value)} maxLength={60}/>
+            <label>Bio</label>
+            <textarea value={editBio} onChange={e => setEditBio(e.target.value)} rows={4} maxLength={300}/>
+            <button className="gc-btn" onClick={saveProfile}>Save Changes</button>
+          </div>
+        )}
+        <h3 className="gc-section-title">My Posts ({myPosts.length})</h3>
+        {myPosts.map(post => <PostCard key={post.id} post={post}/>)}
+      </>
+    );
+  }
+
+  function LiveRoomsPage() {
+    return (
+      <>
+        <PageHeader title="Live Rooms" subtitle="Create a room or join a live community."/>
+        <div className="gc-panel">
+          <h3><Radio size={20}/> Start your Live Room</h3>
+          <input value={roomTitle} onChange={e => setRoomTitle(e.target.value)} placeholder="Give your room a title..."/>
+          <button className="gc-btn" onClick={createRoom}><Radio size={16}/> Go Live</button>
+        </div>
+        {activeRoom && (
+          <div className="gc-live-active">
+            <span className="gc-live-label">● YOU ARE IN A ROOM</span>
+            <h2>{activeRoom.title}</h2>
+            <p>Room is active. Audio/video broadcasting needs the WebRTC media layer.</p>
+            <button className="gc-btn gc-btn-danger" onClick={leaveRoom}>Leave Room</button>
+          </div>
+        )}
+        <h3 className="gc-section-title">Live Now ({rooms.length})</h3>
+        {rooms.map(room => (
+          <div className="gc-person-card" key={room.id}>
+            <span className="gc-room-icon"><Radio/></span>
+            <div className="gc-person-info"><b>{room.title}</b><span>Host: {room.host_id === userId ? "You" : profiles.find(p => p.id === room.host_id)?.display_name || "Community member"}</span></div>
+            <span className="gc-live-label">LIVE</span>
+            <button className="gc-btn" onClick={() => joinRoom(room)}>Join</button>
+          </div>
+        ))}
+        {!rooms.length && <div className="gc-empty">No live rooms right now. Create the first one!</div>}
+      </>
+    );
+  }
+
+  function RandomPage({ mode }) {
+    const label = mode === "chat" ? "Random Chat" : mode === "video" ? "Random Video" : "Random Audio";
+    const Icon = mode === "chat" ? Globe : mode === "video" ? Video : Headphones;
+    return (
+      <>
+        <PageHeader title={label} subtitle="Meet new people from around the world."/>
+        <div className="gc-random-card">
+          <div className="gc-random-icon"><Icon size={48}/></div>
+          <h2>{randomStatus === "searching" ? "Finding someone for you..." : "Meet Someone New"}</h2>
+          <p>{mode === "chat" ? "Start a conversation with a random person." : `Connect with someone using ${mode} calling.`}</p>
+          {randomStatus === "searching" ? (
+            <><div className="gc-spinner"/><button className="gc-btn gc-btn-muted" onClick={stopRandomChat}>Cancel Search</button></>
+          ) : (
+            <button className="gc-btn" onClick={() => startRandomChat(mode)}><Search size={17}/> Start Matching</button>
+          )}
+          {mode !== "chat" && <small>Audio/video matching requires the WebRTC signaling service to be configured.</small>}
+        </div>
+      </>
+    );
+  }
+
+  function SettingsPage() {
+    return (
+      <>
+        <PageHeader title="Settings" subtitle="Manage your account and preferences."/>
+        <div className="gc-panel">
+          <h3><Shield size={20}/> Privacy</h3>
+          <label className="gc-setting-row"><span><b>Private Account</b><small>Control who can connect with you.</small></span><input type="checkbox" checked={settings.private} onChange={e => setSettings(s => ({ ...s, private: e.target.checked }))}/></label>
+          <label className="gc-setting-row"><span><b>Notifications</b><small>Receive app notifications.</small></span><input type="checkbox" checked={settings.notifications} onChange={e => setSettings(s => ({ ...s, notifications: e.target.checked }))}/></label>
+        </div>
+        <div className="gc-panel">
+          <h3>Account</h3>
+          <p>{user?.email}</p>
+          <button className="gc-btn gc-btn-danger" onClick={logout}><LogOut size={16}/> Sign Out</button>
+        </div>
+      </>
+    );
+  }
+
+  let pageContent;
+  switch (page) {
+    case "Home": pageContent = <HomePage/>; break;
+    case "Social Feed": pageContent = <FeedPage/>; break;
+    case "Stories": pageContent = <StoriesPage/>; break;
+    case "Reels": pageContent = <ReelsPage/>; break;
+    case "Discover": pageContent = <DiscoverPage/>; break;
+    case "Connections": pageContent = <ConnectionsPage/>; break;
+    case "Messenger": pageContent = <MessengerPage/>; break;
+    case "Notifications": pageContent = <NotificationsPage/>; break;
+    case "Profile": pageContent = <ProfilePage/>; break;
+    case "Live Rooms": pageContent = <LiveRoomsPage/>; break;
+    case "Random Chat": pageContent = <RandomPage mode="chat"/>; break;
+    case "Random Video": pageContent = <RandomPage mode="video"/>; break;
+    case "Random Audio": pageContent = <RandomPage mode="audio"/>; break;
+    case "Settings": pageContent = <SettingsPage/>; break;
+    default: pageContent = <HomePage/>;
+  }
+
   return (
     <div className="gc-app">
-      <style>{`
-        .gc-app{min-height:100vh;background:#090d1c;color:#f8fafc;display:flex;font-family:Inter,Arial,sans-serif}
-        .gc-sidebar{width:245px;flex-shrink:0;background:#101827;border-right:1px solid #253149;padding:24px 14px;position:sticky;top:0;height:100vh;overflow:auto}
-        .gc-brand{font-size:20px;font-weight:900;letter-spacing:1px;padding:4px 12px 28px}
-        .gc-brand span{display:block;color:#7dd3fc;font-size:11px;letter-spacing:3px;margin-top:5px}
-        .gc-nav{display:grid;gap:7px}
-        .gc-nav button,.gc-mobile-nav button,.gc-more-menu button{border:0;background:transparent;color:#aab6ca;text-align:left;padding:12px;border-radius:11px;font-size:14px;cursor:pointer}
-        .gc-nav button.active,.gc-nav button:hover,.gc-mobile-nav button.active{background:#1d2b43;color:#fff}
-        .gc-main{min-width:0;flex:1}
-        .gc-topbar{height:72px;border-bottom:1px solid #202c40;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0d1424;position:sticky;top:0;z-index:5}
-        .gc-top-actions{display:flex;gap:10px;align-items:center}
-        .gc-icon-btn{border:1px solid #2b3850;background:#172238;color:#fff;border-radius:12px;padding:10px 13px;cursor:pointer}
-        .gc-content{max-width:1100px;margin:0 auto;padding:28px 26px 100px}
-        .gc-hero{padding:34px;border:1px solid #2a3b58;border-radius:22px;background:linear-gradient(120deg,#152844,#101827 65%,#1b2440);margin-bottom:22px}
-        .gc-hero h1{font-size:clamp(28px,5vw,44px);margin:0 0 10px}
-        .gc-hero p,.gc-muted{color:#aab6ca;line-height:1.6}
-        .gc-panel{background:#111b2d;border:1px solid #25344c;border-radius:18px;padding:22px;margin-bottom:20px}
-        .gc-panel h2{margin:0 0 8px;font-size:21px}
-        .gc-panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}
-        .gc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
-        .gc-feature{background:#111b2d;border:1px solid #25344c;border-radius:16px;padding:20px;cursor:pointer;text-align:left;color:#fff}
-        .gc-feature b{display:block;margin:8px 0}
-        .gc-feature span{color:#9eabc0;font-size:13px;line-height:1.5}
-        .gc-field{width:100%;background:#0b1322;border:1px solid #33435e;color:#fff;border-radius:11px;padding:13px;font:inherit;outline:none}
-        .gc-field:focus{border-color:#38bdf8}
-        .gc-form{display:grid;gap:12px}
-        .gc-btn,.gc-person-card button,.gc-actions button{background:#0284c7;color:#fff;border:0;border-radius:10px;padding:11px 16px;font-weight:700;cursor:pointer}
-        .gc-btn:disabled,.gc-person-card button:disabled{opacity:.55;cursor:not-allowed}
-        .secondary-btn{background:#26354d!important;color:#dbeafe!important}
-        .gc-post-card{background:#111b2d;border:1px solid #25344c;border-radius:17px;padding:18px;margin-bottom:15px}
-        .gc-post-head{display:flex;align-items:center;gap:12px}
-        .gc-avatar{border-radius:50%;object-fit:cover;background:#243047;flex-shrink:0}
-        .gc-post-author{display:grid;gap:4px;flex:1}
-        .gc-post-author small{color:#8392aa;font-size:11px}
-        .gc-post-text{white-space:pre-wrap;line-height:1.6;margin:16px 0}
-        .gc-post-media{width:100%;max-height:520px;object-fit:contain;background:#070b14;border-radius:12px;margin-top:12px}
-        .gc-delete{background:transparent;color:#fca5a5;border:0;cursor:pointer}
-        .gc-person-card{display:flex;align-items:center;gap:13px;background:#111b2d;border:1px solid #25344c;border-radius:15px;padding:15px;margin-bottom:12px}
-        .gc-person-info{flex:1;min-width:0}
-        .gc-person-info p{font-size:13px;color:#9eabc0;margin:5px 0 0;line-height:1.45}
-        .gc-status{font-size:12px;color:#93c5fd;white-space:nowrap}
-        .gc-actions{display:flex;gap:6px}
-        .gc-chat-layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:15px;min-height:620px}
-        .gc-chat-list,.gc-chat-window{background:#111b2d;border:1px solid #25344c;border-radius:18px;min-width:0;overflow:hidden}
-        .gc-chat-list{padding:16px}
-        .gc-chat-list-head{font-size:20px;font-weight:800;margin-bottom:15px}
-        .gc-chat-search{margin:12px 0 16px}
-        .gc-chat-person{width:100%;display:flex;align-items:center;gap:12px;background:transparent;border:0;color:#fff;padding:12px 9px;border-radius:13px;text-align:left;cursor:pointer;margin-bottom:5px}
-        .gc-chat-person:hover,.gc-chat-person.selected{background:#243b59}
-        .gc-chat-person-info{min-width:0;flex:1}
-        .gc-chat-person-info strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .gc-chat-person-info small{display:block;color:#94a3b8;font-size:11px;margin-top:5px}
-        .gc-chat-window{display:flex;flex-direction:column;min-height:620px}
-        .gc-chat-header{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #293750;background:#142035}
-        .gc-chat-header-info{flex:1;min-width:0}
-        .gc-chat-header-info strong{display:block}
-        .gc-chat-header-info small{display:block;color:#22c55e;margin-top:5px;font-size:11px}
-        .gc-chat-header-info small.offline{color:#94a3b8}
-        .gc-chat-header-actions{display:flex;gap:7px}
-        .gc-chat-header-actions button{background:#24344e;border:0;color:white;border-radius:10px;padding:9px 12px;cursor:pointer}
-        .gc-messages{flex:1;min-height:350px;max-height:460px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;padding:20px 17px;background:radial-gradient(circle at top,#17253b,#101827 70%)}
-        .gc-chat-date{text-align:center;color:#8192aa;font-size:11px;margin:8px 0}
-        .gc-message-row{display:flex;flex-direction:column;max-width:80%;align-self:flex-start}
-        .gc-message-row.mine{align-self:flex-end;align-items:flex-end}
-        .gc-bubble{padding:12px 15px;border-radius:18px 18px 18px 5px;background:#263750;color:#f8fafc;overflow-wrap:anywhere;line-height:1.5;white-space:pre-wrap}
-        .gc-message-row.mine .gc-bubble{background:linear-gradient(135deg,#087cc5,#2563eb);border-radius:18px 18px 5px 18px}
-        .gc-message-meta{font-size:10px;color:#9caec4;margin:5px 5px 0}
-        .gc-message-row.mine .gc-message-meta{color:#a9d9ff;text-align:right}
-        .gc-chat-form{display:flex;align-items:center;gap:9px;padding:14px;border-top:1px solid #293750;background:#121e31}
-        .gc-chat-form .gc-field{min-width:0;flex:1;border-radius:25px;padding:13px 17px}
-        .gc-send-btn{height:45px;min-width:48px;border:0;border-radius:50%;background:#168de0;color:white;font-size:19px;cursor:pointer}
-        .gc-send-btn:disabled{opacity:.5}
-        .gc-chat-placeholder{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;padding:30px;color:#aab6ca}
-        .gc-chat-placeholder-icon{font-size:54px;margin-bottom:12px}
-        .gc-cover{height:150px;border-radius:13px;background:#1e3a5f center/cover no-repeat;margin-bottom:18px}
-        .gc-profile-row{display:flex;align-items:center;gap:14px;margin-top:-48px;padding:0 18px 14px}
-        .gc-profile-row .gc-avatar{border:4px solid #111b2d}
-        .gc-toast{position:fixed;bottom:22px;right:22px;z-index:20;background:#172943;border:1px solid #426080;color:#fff;padding:13px 18px;border-radius:12px;max-width:min(90vw,420px);box-shadow:0 12px 35px #0008}
-        .gc-empty{padding:28px;text-align:center;color:#9eabc0}
-        .gc-loading,.error-screen{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#090d1c;color:#fff;text-align:center;padding:20px}
-        .gc-spinner{width:34px;height:34px;border:3px solid #334155;border-top-color:#38bdf8;border-radius:50%;animation:gcspin 1s linear infinite;margin-bottom:15px}
-        @keyframes gcspin{to{transform:rotate(360deg)}}
-        .gc-mobile-nav,.gc-more-menu{display:none}
-        @media(max-width:850px){.gc-sidebar{width:205px}.gc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.gc-chat-layout{grid-template-columns:250px minmax(0,1fr)}}
-        @media(max-width:680px){
-          .gc-app{display:block}
-          .gc-sidebar{display:none}
-          .gc-topbar{height:62px;padding:0 14px}
-          .gc-content{padding:18px 13px 100px}
-          .gc-hero{padding:23px}
-          .gc-panel{padding:16px}
-          .gc-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-          .gc-feature{padding:14px}
-          .gc-person-card{align-items:flex-start;flex-wrap:wrap}
-          .gc-person-info{min-width:calc(100% - 75px)}
-          .gc-person-card>button,.gc-person-card>.gc-status,.gc-person-card>.gc-actions{margin-left:67px}
-          .gc-chat-layout{grid-template-columns:1fr;min-height:0}
-          .gc-chat-list{max-height:220px;overflow:auto}
-          .gc-chat-window{min-height:540px}
-          .gc-messages{min-height:320px;max-height:390px}
-          .gc-mobile-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:10;background:#101827;border-top:1px solid #2b3850;justify-content:space-around;padding:7px 2px calc(7px + env(safe-area-inset-bottom))}
-          .gc-mobile-nav button{font-size:10px;text-align:center;padding:8px 5px;flex:1}
-          .gc-more-menu{display:block;position:fixed;right:12px;bottom:75px;z-index:12;background:#172238;border:1px solid #35445d;border-radius:14px;padding:8px;max-height:65vh;overflow:auto;box-shadow:0 15px 40px #0009}
-          .gc-more-menu button{display:block;width:100%}
-          .gc-toast{bottom:78px;left:12px;right:12px;max-width:none}
-          .gc-profile-row{padding-left:8px}
-          .gc-chat-header{padding:13px}
-        }
-      `}</style>
-
-      <aside className="gc-sidebar">
+      <aside className={`gc-sidebar ${mobileMenu ? "open" : ""}`}>
         <div className="gc-brand">
-          🌍 GLOBAL CONNECT
-          <span>MEET THE WORLD</span>
+          <div className="gc-brand-icon"><Globe size={25}/></div>
+          <div><b>GLOBAL CONNECT</b><small>MEET THE WORLD</small></div>
+          <button className="gc-icon-btn gc-close-menu" onClick={() => setMobileMenu(false)}><X/></button>
         </div>
-
+        <div className="gc-side-profile">
+          <Avatar src={profile?.avatar_url} name={profile?.display_name} size={43} online/>
+          <span><b>{profile?.display_name || "Your Profile"}</b><small>Online</small></span>
+        </div>
         <nav className="gc-nav">
-          {menuItems.map(item => (
-            <button key={item}
-              className={page === item ? "active" : ""}
-              onClick={() => openPage(item)}>
-              {item === "Home" ? "⌂" :
-                item === "Social Feed" ? "▤" :
-                item === "Random Video" ? "◉" :
-                item === "Random Audio" ? "♫" :
-                item === "Random Chat" ? "☏" :
-                item === "Messenger" ? "✉" :
-                item === "Discover" ? "◎" :
-                item === "Connections" ? "♧" :
-                item === "Reels" ? "▶" :
-                item === "Live Rooms" ? "●" :
-                item === "Profile" ? "◉" : "♢"}
-              {"　"}{item}
+          {NAV.map(([name, Icon]) => (
+            <button key={name} className={page === name ? "active" : ""} onClick={() => { setPage(name); setMobileMenu(false); }}>
+              <Icon size={19}/><span>{name}</span>
+              {name === "Notifications" && unreadNotifications > 0 && <i className="gc-nav-badge">{unreadNotifications}</i>}
             </button>
           ))}
         </nav>
+        <button className="gc-logout" onClick={logout}><LogOut size={18}/> Sign Out</button>
       </aside>
-
+      {mobileMenu && <div className="gc-overlay" onClick={() => setMobileMenu(false)}/>}
       <main className="gc-main">
         <header className="gc-topbar">
-          <strong>{page}</strong>
-
-          <div className="gc-top-actions">
-            <button className="gc-icon-btn" onClick={() => openPage("Discover")}>🔍</button>
-            <button className="gc-icon-btn" onClick={() => openPage("Notifications")}>🔔</button>
-            <button className="gc-icon-btn" onClick={() => openPage("Profile")}>
-              <Avatar src={profile.avatar_url} name={displayName} size={24} />
-            </button>
-            <button className="gc-icon-btn" onClick={logout}>↪</button>
-          </div>
+          <button className="gc-icon-btn gc-menu-btn" onClick={() => setMobileMenu(true)}><Menu/></button>
+          <div className="gc-top-search"><Search size={17}/><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search GLOBAL CONNECT..." onKeyDown={e => e.key === "Enter" && setPage("Discover")}/></div>
+          <button className="gc-icon-btn" onClick={() => setPage("Notifications")}><Bell/>{unreadNotifications > 0 && <i className="gc-dot-badge"/>}</button>
+          <button className="gc-top-user" onClick={() => setPage("Profile")}><Avatar src={profile?.avatar_url} name={profile?.display_name} size={34}/><span>{profile?.display_name || "Profile"}</span></button>
         </header>
-
         <div className="gc-content">
-
-          {page === "Home" && (
-            <>
-              <section className="gc-hero">
-                <h1>Meet the world. 🌍</h1>
-                <p>Connect with people, share your moments and build meaningful friendships around the world.</p>
-                <button className="gc-btn" onClick={() => openPage("Discover")}>Discover People</button>
-              </section>
-
-              <div className="gc-grid">
-                {[
-                  ["🌍", "Discover People", "Find new connections around the world.", "Discover"],
-                  ["📰", "Social Feed", "Share photos, videos and moments.", "Social Feed"],
-                  ["💬", "Messenger", "Chat privately with your connections.", "Messenger"],
-                  ["🎥", "Random Video", "Video matching interface.", "Random Video"],
-                  ["🎙️", "Random Audio", "Audio matching interface.", "Random Audio"],
-                  ["🔴", "Live Rooms", "Live rooms and group streaming.", "Live Rooms"]
-                ].map(([icon, title, desc, target]) => (
-                  <button className="gc-feature" key={title} onClick={() => openPage(target)}>
-                    <div style={{ fontSize: 28 }}>{icon}</div>
-                    <b>{title}</b>
-                    <span>{desc}</span>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {page === "Social Feed" && (
-            <>
-              <section className="gc-panel">
-                <h2>Global Social Feed</h2>
-                <p className="gc-muted">Share your moments with the world 🌍</p>
-
-                <form className="gc-form" onSubmit={createPost}>
-                  <textarea className="gc-field" rows="3" maxLength="2000"
-                    placeholder="What's on your mind?"
-                    value={postText}
-                    onChange={e => setPostText(e.target.value)} />
-
-                  <input id="post-file-input" className="gc-field"
-                    type="file" accept="image/*,video/*"
-                    onChange={e => setPostFile(e.target.files?.[0] || null)} />
-
-                  {postFile && <small className="gc-muted">Selected: {postFile.name}</small>}
-
-                  <button className="gc-btn" disabled={posting}>
-                    {posting ? "Publishing..." : "🌍 Publish Post"}
-                  </button>
-                </form>
-              </section>
-
-              <section>
-                <div className="gc-panel-head">
-                  <h2>Community Posts</h2>
-                  <button className="gc-icon-btn" onClick={loadPosts}>↻ Refresh</button>
-                </div>
-
-                {loadingPosts ? <div className="gc-empty">Loading posts...</div> :
-                  posts.length ? posts.map(post => <PostCard key={post.id} post={post} />) :
-                    <div className="gc-panel gc-empty">📰 No posts yet. Be the first person to share something!</div>}
-              </section>
-            </>
-          )}
-
-          {page === "Discover" && (
-            <section className="gc-panel">
-              <div className="gc-panel-head">
-                <div>
-                  <h2>Discover People</h2>
-                  <p className="gc-muted">Find new connections around the world. 🌍</p>
-                </div>
-                <button className="gc-icon-btn" onClick={loadPeople}>↻ Refresh</button>
-              </div>
-
-              {loadingPeople ? <div className="gc-empty">Loading people...</div> :
-                people.length ? people.map(person => <PersonCard key={person.id} person={person} />) :
-                  <div className="gc-empty">अभी कोई दूसरा community member नहीं मिला।</div>}
-            </section>
-          )}
-
-          {page === "Connections" && (
-            <section className="gc-panel">
-              <div className="gc-panel-head">
-                <div>
-                  <h2>Connections</h2>
-                  <p className="gc-muted">Manage your connection requests and friends.</p>
-                </div>
-                <button className="gc-icon-btn" onClick={loadConnections}>↻ Refresh</button>
-              </div>
-
-              <h3 style={{ margin: "15px 0" }}>Incoming Requests</h3>
-
-              {incomingRequests.length ? incomingRequests.map(connection => {
-                const person = connectionProfiles.find(p => p.id === connection.sender_id) || {
-                  id: connection.sender_id,
-                  display_name: "Community member"
-                };
-                return <PersonCard key={connection.id} person={person} />;
-              }) : <p className="gc-empty">No pending requests.</p>}
-
-              <h3 style={{ margin: "24px 0 14px" }}>Your Connections</h3>
-
-              {connectedPeople.length ? connectedPeople.map(person => (
-                <div className="gc-person-card" key={person.id}>
-                  <Avatar src={person.avatar_url} name={person.display_name} />
-                  <div className="gc-person-info">
-                    <strong>{person.display_name || "Community member"}</strong>
-                    <p>{person.bio || "Connected with you"}</p>
-                  </div>
-                  <button onClick={() => openChat(person)}>Message</button>
-                </div>
-              )) : <p className="gc-empty">No connections yet. Discover people to connect.</p>}
-            </section>
-          )}
-
-          {page === "Messenger" && (
-            <section>
-              <div className="gc-panel-head">
-                <div>
-                  <h2>Messages 💬</h2>
-                  <p className="gc-muted">Connect privately with your friends.</p>
-                </div>
-                <button className="gc-icon-btn" onClick={loadConnections}>↻ Refresh</button>
-              </div>
-
-              <div className="gc-chat-layout">
-
-                <div className="gc-chat-list">
-                  <div className="gc-chat-list-head">Chats</div>
-
-                  <input
-                    className="gc-field gc-chat-search"
-                    placeholder="🔍 Search conversations..."
-                    value={chatSearch}
-                    onChange={e => setChatSearch(e.target.value)}
-                  />
-
-                  {loadingConnections ? (
-                    <div className="gc-empty">Loading connections...</div>
-                  ) : filteredChats.length ? (
-                    filteredChats.map(person => (
-                      <button
-                        key={person.id}
-                        className={"gc-chat-person " + (
-                          selectedChat?.id === person.id ? "selected" : ""
-                        )}
-                        onClick={() => openChat(person)}
-                      >
-                        <Avatar
-                          src={person.avatar_url}
-                          name={person.display_name}
-                          size={45}
-                        />
-                        <div className="gc-chat-person-info">
-                          <strong>{person.display_name || "Member"}</strong>
-                          <small>Tap to open conversation</small>
-                        </div>
-                        <span style={{ color: "#38bdf8" }}>›</span>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="gc-empty">
-                      {connectedPeople.length
-                        ? "No matching conversations."
-                        : "Connect with people first."}
-                    </div>
-                  )}
-                </div>
-
-                <div className="gc-chat-window">
-                  {selectedChat ? (
-                    <>
-                      <div className="gc-chat-header">
-                        <Avatar
-                          src={selectedChat.avatar_url}
-                          name={selectedChat.display_name}
-                          size={46}
-                        />
-                        <div className="gc-chat-header-info">
-                          <strong>{selectedChat.display_name || "Member"}</strong>
-                          <small className="offline">● Connected</small>
-                        </div>
-                        <div className="gc-chat-header-actions">
-                          <button title="Refresh messages"
-                            onClick={() => loadMessages(selectedChat.id)}>↻</button>
-                          <button title="Close chat"
-                            onClick={() => {
-                              setSelectedChat(null);
-                              setMessages([]);
-                            }}>✕</button>
-                        </div>
-                      </div>
-
-                      <div className="gc-messages">
-                        {loadingMessages ? (
-                          <div className="gc-empty">Loading messages...</div>
-                        ) : messages.length ? (
-                          <>
-                            <div className="gc-chat-date">Your conversation</div>
-                            {messages.map(message => {
-                              const mine = message.sender_id === user.id;
-                              return (
-                                <div
-                                  key={message.id}
-                                  className={"gc-message-row " + (mine ? "mine" : "")}
-                                >
-                                  <div className="gc-bubble">{message.content}</div>
-                                  <div className="gc-message-meta">
-                                    {message.created_at
-                                      ? new Date(message.created_at).toLocaleTimeString([], {
-                                          hour: "2-digit",
-                                          minute: "2-digit"
-                                        })
-                                      : ""}
-                                    {mine && (message.read_at ? " · Seen ✓✓" : " · Sent ✓")}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </>
-                        ) : (
-                          <div className="gc-chat-placeholder">
-                            <div>
-                              <div className="gc-chat-placeholder-icon">👋</div>
-                              <h3>Say Hello!</h3>
-                              <p>Start a new conversation with {selectedChat.display_name || "your friend"}.</p>
-                            </div>
-                          </div>
-                        )}
-                        <div ref={messagesEndRef} />
-                      </div>
-
-                      <form className="gc-chat-form" onSubmit={sendMessage}>
-                        <input
-                          ref={messageInputRef}
-                          className="gc-field"
-                          placeholder="Message..."
-                          value={messageText}
-                          maxLength={5000}
-                          onChange={e => setMessageText(e.target.value)}
-                        />
-                        <button
-                          className="gc-send-btn"
-                          disabled={sendingMessage || !messageText.trim()}
-                          title="Send message"
-                        >
-                          {sendingMessage ? "…" : "➤"}
-                        </button>
-                      </form>
-                    </>
-                  ) : (
-                    <div className="gc-chat-placeholder">
-                      <div>
-                        <div className="gc-chat-placeholder-icon">💬</div>
-                        <h2>Your Messages</h2>
-                        <p>Select a connection to start chatting.</p>
-                        <p style={{ marginTop: 12, color: "#38bdf8" }}>
-                          GLOBAL CONNECT Messenger
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-          )}
-
-          {page === "Profile" && (
-            <section className="gc-panel">
-              <h2>Your Profile</h2>
-
-              <div className="gc-cover" style={{
-                backgroundImage: profile.cover_url
-                  ? `url("${profile.cover_url}")`
-                  : undefined
-              }} />
-
-              <div className="gc-profile-row">
-                <Avatar src={profile.avatar_url} name={displayName} size={76} />
-                <div>
-                  <strong>{displayName}</strong>
-                  <p className="gc-muted">{user.email}</p>
-                </div>
-              </div>
-
-              <form className="gc-form" onSubmit={saveProfile}>
-                <label>
-                  Display Name
-                  <input className="gc-field" maxLength="60"
-                    value={profile.display_name}
-                    onChange={e => setProfile(p => ({
-                      ...p, display_name: e.target.value
-                    }))}
-                    placeholder="Your name" />
-                </label>
-
-                <label>
-                  About You
-                  <textarea className="gc-field" rows="4" maxLength="500"
-                    value={profile.bio}
-                    onChange={e => setProfile(p => ({
-                      ...p, bio: e.target.value
-                    }))}
-                    placeholder="Tell the world about yourself..." />
-                </label>
-
-                <label>
-                  Profile Photo
-                  <input className="gc-field" type="file" accept="image/*"
-                    onChange={e => uploadProfileImage(e.target.files?.[0], "avatar_url")} />
-                </label>
-
-                <label>
-                  Cover Photo
-                  <input className="gc-field" type="file" accept="image/*"
-                    onChange={e => uploadProfileImage(e.target.files?.[0], "cover_url")} />
-                </label>
-
-                <button className="gc-btn" disabled={busy}>
-                  {busy ? "Saving..." : "Save Profile"}
-                </button>
-              </form>
-            </section>
-          )}
-
-          {page === "Reels" && (
-            <section className="gc-panel">
-              <h2>Reels</h2>
-              <p className="gc-muted">Short videos shared by the community.</p>
-
-              {posts.filter(p =>
-                p.media_type === "video" ||
-                /\.(mp4|webm|mov)(\?|$)/i.test(p.media_url || "")
-              ).length ? (
-                posts.filter(p =>
-                  p.media_type === "video" ||
-                  /\.(mp4|webm|mov)(\?|$)/i.test(p.media_url || "")
-                ).map(post => <PostCard key={post.id} post={post} />)
-              ) : (
-                <div className="gc-empty">
-                  No reels yet. Share a video in Social Feed to get started.
-                </div>
-              )}
-            </section>
-          )}
-
-          {["Random Video", "Random Audio", "Random Chat", "Live Rooms"].includes(page) && (
-            <section className="gc-panel">
-              <div style={{ fontSize: 42, marginBottom: 12 }}>
-                {page === "Random Video" ? "🎥" :
-                  page === "Random Audio" ? "🎙️" :
-                  page === "Random Chat" ? "💬" : "🔴"}
-              </div>
-
-              <h2>{page}</h2>
-              <p className="gc-muted" style={{ margin: "12px 0 20px" }}>
-                {page === "Random Video"
-                  ? "Random video matching के लिए WebRTC signaling और matching server जोड़ना बाकी है।"
-                  : page === "Random Audio"
-                  ? "Audio calls के लिए WebRTC signaling और matching server जोड़ना बाकी है।"
-                  : page === "Random Chat"
-                  ? "Random text matching service अभी connect नहीं है।"
-                  : "Live multi-user rooms के लिए streaming server/SFU जोड़ना बाकी है।"}
-              </p>
-
-              <button className="gc-btn" onClick={() => showNotice(
-                "यह feature UI तैयार है; अगला चरण backend और realtime setup है।"
-              )}>
-                Check Feature Status
-              </button>
-            </section>
-          )}
-
-          {page === "Notifications" && (
-            <section className="gc-panel">
-              <h2>Notifications</h2>
-              <p className="gc-muted">Your connection and activity notifications will appear here.</p>
-              <div className="gc-empty">No new notifications.</div>
-            </section>
-          )}
-
+          {pageContent}
+          <footer className="gc-footer">© {new Date().getFullYear()} GLOBAL CONNECT · Meet the World</footer>
         </div>
       </main>
 
-      <nav className="gc-mobile-nav">
-        {mobileItems.map(item => (
-          <button key={item}
-            className={page === item ? "active" : ""}
-            onClick={() => openPage(item)}>
-            {item === "Home" ? "⌂" :
-              item === "Social Feed" ? "▤" :
-              item === "Discover" ? "◎" :
-              item === "Messenger" ? "✉" : "◉"}
-            <br />{item}
-          </button>
-        ))}
-
-        <button onClick={() => setMoreOpen(v => !v)}>
-          ☰<br />More
-        </button>
-      </nav>
-
-      {moreOpen && (
-        <div className="gc-more-menu">
-          {menuItems.filter(item => !mobileItems.includes(item)).map(item => (
-            <button key={item} onClick={() => openPage(item)}>{item}</button>
-          ))}
+      {selectedStory && (
+        <div className="gc-modal" onClick={() => setSelectedStory(null)}>
+          <button className="gc-modal-close" onClick={() => setSelectedStory(null)}><X/></button>
+          {selectedStory.media_type === "video"
+            ? <video src={selectedStory.media_url} controls autoPlay onClick={e => e.stopPropagation()}/>
+            : <img src={selectedStory.media_url} alt="Story" onClick={e => e.stopPropagation()}/>}
         </div>
       )}
 
-      {notice && <div className="gc-toast" role="status">{notice}</div>}
+      {callPeer && (
+        <div className="gc-modal">
+          <div className="gc-call-card">
+            <Avatar src={callPeer.avatar_url} name={callPeer.display_name} size={90}/>
+            <h2>{callPeer.display_name}</h2>
+            <p>{callMode === "video" ? "Video call" : "Audio call"} · WebRTC setup required</p>
+            <button className="gc-btn gc-btn-danger" onClick={() => { setCallPeer(null); setCallState("idle"); }}>End Call</button>
+          </div>
+        </div>
+      )}
+      {notice && <div className="gc-toast">{notice}</div>}
     </div>
   );
 }
 
-createRoot(document.getElementById("root")).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>
-);
+const root = createRoot(document.getElementById("root"));
+root.render(<ErrorBoundary><App/></ErrorBoundary>);
